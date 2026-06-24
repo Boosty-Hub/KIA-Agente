@@ -639,7 +639,6 @@ async function maybeFanOut(): Promise<void> {
       .not("vertical_id", "is", null)
       .is("answered_by_draft_id", null)
       .eq("ignored", false)
-      .eq("requires_human_review", false)
       .limit(1);
     if (!more || more.length === 0) return; // nada más que procesar
 
@@ -817,8 +816,9 @@ async function pickLeadBatch(
     }
   }
 
-  // Con bypass, también tomamos los mensajes en review humana (el agente
-  // responde y publica todo). Sin bypass, solo los no marcados.
+  // El agente SIEMPRE genera borrador para todo mensaje no-ignorado (incluidos
+  // los marcados requires_human_review). La revisión NO impide el borrador — se
+  // refleja en el status del draft (pending = necesita aprobación humana) abajo.
   let q = supabase
     .from("messages")
     .select(MSG_SELECT)
@@ -826,7 +826,6 @@ async function pickLeadBatch(
     .not("vertical_id", "is", null)
     .is("answered_by_draft_id", null)
     .eq("ignored", false);
-  if (!bypass) q = q.eq("requires_human_review", false);
   // Ventana de frescura: solo atender mensajes recientes. Lo más viejo que la
   // ventana NO se responde (lo manejan los asesores) → no arrastra backlog.
   if (maxAgeHours > 0) {
@@ -1540,13 +1539,19 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // forceReview (revisión humana) → siempre pending para que el humano
-      // apruebe/edite. bypass → siempre approved (publica todo, ignora review).
-      // Resto → lógica normal por vertical.
+      // El agente SIEMPRE genera borrador; el status decide si necesita aprobación:
+      //  - forceReview (revisión humana explícita) → pending.
+      //  - bypass (publica todo) → approved.
+      //  - batch marcado requires_human_review (odio/queja/baja confianza) → pending.
+      //  - vertical conversacional (auto_reply sin requires_review) → approved.
+      //  - resto → pending.
+      const batchNeedsReview = batchMsgs.some((m) => m.requires_human_review === true);
       const status = forceReview
         ? "pending"
         : bypass
         ? "approved"
+        : batchNeedsReview
+        ? "pending"
         : vertical.auto_reply && !vertical.requires_review
         ? "approved"
         : "pending";
