@@ -27,7 +27,7 @@ El flujo es **single-tenant**: un clon = un cliente. Cada cliente tiene su propi
 
 ### Codegen automático
 
-`pnpm dev` y `pnpm build` corren automáticamente `node scripts/embed-provision.mjs` (hooks `predev`/`prebuild`). El script embebe todas las migraciones SQL y el source de las 8 Edge Functions en archivos TypeScript generados (`web/src/lib/provision/*.generated.ts`, gitignoreados). Esto permite que el wizard `/first-run` aplique migraciones y despliegue funciones sin acceso al filesystem en runtime. **Si el directorio `../supabase/` no existe, el build falla intencionalmente** — diseñado para que el build no pase en silencio con un provisioner vacío.
+`pnpm dev` y `pnpm build` corren automáticamente `node scripts/embed-provision.mjs` (hooks `predev`/`prebuild`). El script embebe todas las migraciones SQL y el source de las 9 Edge Functions en archivos TypeScript generados (`web/src/lib/provision/*.generated.ts`, gitignoreados). Esto permite que el wizard `/first-run` aplique migraciones y despliegue funciones sin acceso al filesystem en runtime. **Si el directorio `../supabase/` no existe, el build falla intencionalmente** — diseñado para que el build no pase en silencio con un provisioner vacío.
 
 ### Precedencia de config (clave)
 
@@ -107,6 +107,24 @@ El system prompt vivo está en `runtime_config.SYSTEM_PROMPT` (DB), editable des
 - `{{MEMORY_STORE_MASTER}}` / `{{MEMORY_STORE_LEADS}}` — nombres de los stores.
 
 La sustitución y la lista de tools viven en `web/src/lib/agent-prompt.ts` (compartidas por `/api/agent` y `/api/setup/agent`). Guardar en `/agent` llama `anthropic.beta.agents.update()` y persiste la versión nueva en `runtime_config.ANTHROPIC_AGENT_VERSION`. `agent/system-prompt.example.md` (commiteado) es el template de partida para copiar/pegar al wizard; el prompt vivo está en `runtime_config.SYSTEM_PROMPT`.
+
+### Tools del agente — acciones sobre Kommo (gated)
+
+Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en `agent_tools`) que **operan el CRM POR NOMBRE** (no por ID): resuelven etapa/campo en vivo contra la API de Kommo. Se despachan en `runCrmTool` dentro de `supabase/functions/generate-response/index.ts`; los helpers HTTP viven en `_shared/kommo.ts`. Cada capacidad tiene un **gate** en `kommo_publish_config` (default OFF), editable en `/agent → Acciones` (`agent/crm-actions-panel.tsx` → `/api/agent/crm-actions`). El gate es runtime (TTL 60s, sin re-sync); las tools siempre están declaradas en el agente, pero solo **ejecutan** si su gate está prendido y una instrucción del system prompt/vertical se los pide (modelo híbrido — ver descripciones en las migraciones).
+
+| Tool | Qué hace | Gate | Migración |
+|---|---|---|---|
+| `mover_etapa` | mueve el lead a otra etapa del embudo por nombre (`pipeline_name` opcional para desambiguar) | `crm_can_move_stage` | 0028 |
+| `actualizar_lead` | escribe un custom field del LEAD por nombre (texto, o lista `select`/`multiselect` → `enum_id`) | `crm_can_update_lead` | 0028 + 0042 |
+| `actualizar_contacto` | escribe un custom field del CONTACTO por nombre (texto, lista, o teléfono/email de sistema vía `field_code`) | `crm_can_update_contact` | 0028 + 0042 |
+| `agregar_nota` | agrega una nota interna en el lead (`POST /api/v4/leads/{id}/notes`, `note_type:common`) | `crm_can_add_note` | 0042 |
+| `etiquetar_lead` | agrega tags al lead de forma **aditiva** (lee las existentes y mergea, no las pisa) | `crm_can_tag` | 0042 |
+| `transferir_asesor` | handoff a humano: enciende el campo `agent_off_field_id` (checkbox, se configura por nombre en `/agent`) + opcional mover de etapa + nota con el motivo | `crm_can_handoff` | 0042 |
+
+- **Master gate**: `crm_actions_enabled`. Apagarlo fuerza todas las capacidades hijas a `false` (cascada espejada en el route `/api/agent/crm-actions` y en el panel).
+- **Campos tipados** (0042): `actualizar_lead`/`actualizar_contacto` leen `field.type` vía `fetchEntityFields` (que ahora devuelve `code/type/enums`). `select`/`multiselect` → resuelve el valor textual a `enum_id` (`patchEntityFieldEnum`); contacto con `field.code` `PHONE`/`EMAIL` → shape `{field_code, values:[{value, enum_code:"WORK"}]}` (`patchContactCodeField`).
+- Las tools `system` se seedean `enabled=true` → `buildAgentTools()`/`syncAgentTools()` las registran en Anthropic en el próximo sync. **No** son editables desde `/tools` (ese editor gestiona solo tools `http`; PATCH/DELETE de una `system` devuelve 403).
+- El `/setup → agent` crea el Managed Agent con TODAS las tools `enabled` (system + http). Prender un gate por primera vez dispara un `syncAgentTools` idempotente para garantizar el registro.
 
 ### Front (Next.js App Router)
 
