@@ -8,6 +8,9 @@ export type CrmFlags = {
   moveStage: boolean;
   updateLead: boolean;
   updateContact: boolean;
+  addNote: boolean;
+  handoff: boolean;
+  tag: boolean;
 };
 
 const FIELD: Record<keyof CrmFlags, string> = {
@@ -15,6 +18,9 @@ const FIELD: Record<keyof CrmFlags, string> = {
   moveStage: "crm_can_move_stage",
   updateLead: "crm_can_update_lead",
   updateContact: "crm_can_update_contact",
+  addNote: "crm_can_add_note",
+  handoff: "crm_can_handoff",
+  tag: "crm_can_tag",
 };
 
 export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
@@ -49,7 +55,15 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
     // Apagar el master apaga todo (espejo de la lógica del backend).
     const next: CrmFlags = v
       ? { ...flags, enabled: true }
-      : { enabled: false, moveStage: false, updateLead: false, updateContact: false };
+      : {
+          enabled: false,
+          moveStage: false,
+          updateLead: false,
+          updateContact: false,
+          addNote: false,
+          handoff: false,
+          tag: false,
+        };
     const patch: Record<string, boolean> = v
       ? { crm_actions_enabled: true }
       : {
@@ -57,6 +71,9 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
           crm_can_move_stage: false,
           crm_can_update_lead: false,
           crm_can_update_contact: false,
+          crm_can_add_note: false,
+          crm_can_handoff: false,
+          crm_can_tag: false,
         };
     persist(patch, next);
   }
@@ -96,12 +113,15 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
       {/* Capacidades */}
       <div className="space-y-3">
         <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">
-          ¿Qué puede hacer?
+          ¿Qué puede hacer?{" "}
+          <span className="font-normal normal-case text-neutral-400">
+            — todo usa tu conexión de Kommo (el mismo token)
+          </span>
         </p>
         <CapabilityCard
           icon="🔀"
           title="Mover de etapa"
-          description="Mueve el lead a otra etapa del embudo (ej: pasarlo a 'Ganado' cuando confirma la compra)."
+          description="Mueve el lead a otra etapa del embudo por nombre (ej: «POR COTIZAR», «AGENDAR CITA»). En Kommo: cambia el status_id del lead."
           checked={flags.moveStage}
           disabled={capsDisabled}
           onChange={(v) => toggleCap("moveStage", v)}
@@ -109,7 +129,7 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
         <CapabilityCard
           icon="✏️"
           title="Actualizar datos del lead"
-          description="Completa campos del lead (ej: presupuesto, ciudad, producto de interés)."
+          description="Completa campos del lead por nombre (ej: «Modelo Vehículo»). Soporta listas (select/multiselect). En Kommo: escribe el custom field del lead."
           checked={flags.updateLead}
           disabled={capsDisabled}
           onChange={(v) => toggleCap("updateLead", v)}
@@ -117,11 +137,42 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
         <CapabilityCard
           icon="👤"
           title="Actualizar datos del contacto"
-          description="Completa campos del contacto del lead (ej: email, cumpleaños)."
+          description="Completa campos del contacto por nombre (ej: «Cédula», «Dirección», teléfono, email). En Kommo: escribe el custom field del contacto."
           checked={flags.updateContact}
           disabled={capsDisabled}
           onChange={(v) => toggleCap("updateContact", v)}
         />
+        <CapabilityCard
+          icon="🗒️"
+          title="Agregar nota interna"
+          description="Deja una nota (no visible para el cliente) con contexto para los asesores. En Kommo: crea una nota en el timeline del lead."
+          checked={flags.addNote}
+          disabled={capsDisabled}
+          onChange={(v) => toggleCap("addNote", v)}
+        />
+        <CapabilityCard
+          icon="🏷️"
+          title="Etiquetar el lead"
+          description="Agrega etiquetas (tags) al lead sin borrar las existentes (ej: «COTIZAR», «CITA»). En Kommo: añade tags al lead."
+          checked={flags.tag}
+          disabled={capsDisabled}
+          onChange={(v) => toggleCap("tag", v)}
+        />
+        <CapabilityCard
+          icon="🤝"
+          title="Transferir a un asesor"
+          description="Deriva el lead a una persona: enciende el campo «Apagar Agente» (para que el agente deje de responderle) y, opcional, lo mueve de etapa. En Kommo: marca la casilla configurada + cambia el status_id."
+          checked={flags.handoff}
+          disabled={capsDisabled}
+          onChange={(v) => toggleCap("handoff", v)}
+        />
+        {flags.handoff && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            ⚠️ «Transferir a un asesor» apaga el agente por lead usando el campo «Apagar
+            Agente». Configurá ese campo en el interruptor por lead (sección Identidad) para
+            que la derivación lo apague; si no, solo moverá de etapa o dejará nota.
+          </p>
+        )}
       </div>
 
       {/* Cómo indicarle */}

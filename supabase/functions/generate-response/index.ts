@@ -17,6 +17,11 @@ import {
   moveLeadStage,
   fetchPipelineStages,
   fetchEntityFields,
+  addLeadNote,
+  setLeadCheckboxField,
+  addLeadTags,
+  patchEntityFieldEnum,
+  patchContactCodeField,
   type KommoStageLite,
   type KommoFieldLite,
 } from "../_shared/kommo.ts";
@@ -244,6 +249,9 @@ type CrmGate = {
   moveStage: boolean;
   updateLead: boolean;
   updateContact: boolean;
+  addNote: boolean;
+  handoff: boolean;
+  tag: boolean;
 };
 
 type CrmContext = {
@@ -252,13 +260,21 @@ type CrmContext = {
   domain: string;
   token: string;
   gate: CrmGate;
+  agentOffFieldId?: number | null; // campo "Apagar Agente" de Kommo (para handoff)
   // Campos para registrar lead_stage_events (opcionales; fail-open si ausentes)
   internalLeadId?: string;
   currentKommoStageId?: number | null;
   draftId?: string;
 };
 
-const CRM_TOOL_NAMES = new Set(["mover_etapa", "actualizar_lead", "actualizar_contacto"]);
+const CRM_TOOL_NAMES = new Set([
+  "mover_etapa",
+  "actualizar_lead",
+  "actualizar_contacto",
+  "agregar_nota",
+  "transferir_asesor",
+  "etiquetar_lead",
+]);
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
 let leadFieldsCache: { items: KommoFieldLite[]; loadedAt: number } | null = null;
@@ -365,6 +381,18 @@ async function runCrmTool(
       const opciones = fields.map((x) => `"${x.name}"`).join(", ");
       return `No existe un campo de lead llamado "${fieldName}". Campos disponibles: ${opciones || "(ninguno)"}.`;
     }
+    // Campos tipo lista (select/multiselect): resolver el valor textual → enum_id.
+    if (f.type === "select" || f.type === "multiselect") {
+      const wanted = value.split(/[,;]+/).map((v) => v.trim()).filter(Boolean);
+      const matched = f.enums.filter((e) => wanted.some((w) => norm(w) === norm(e.value)));
+      if (matched.length === 0) {
+        const validos = f.enums.map((e) => `"${e.value}"`).join(", ");
+        return `El campo "${f.name}" es una lista; valores válidos: ${validos || "(ninguno)"}. Reintentá con uno de esos.`;
+      }
+      const enumIds = f.type === "select" ? [matched[0].id] : matched.map((e) => e.id);
+      await patchEntityFieldEnum("leads", ctx.kommoLeadId, f.id, enumIds, ctx.domain, ctx.token);
+      return `Listo: actualicé "${f.name}" del lead a ${matched.map((e) => `"${e.value}"`).join(", ")}.`;
+    }
     await patchLeadField(ctx.kommoLeadId, f.id, value, ctx.domain, ctx.token);
     return `Listo: actualicé el campo "${f.name}" del lead a "${value}".`;
   }
@@ -381,8 +409,77 @@ async function runCrmTool(
       const opciones = fields.map((x) => `"${x.name}"`).join(", ");
       return `No existe un campo de contacto llamado "${fieldName}". Campos disponibles: ${opciones || "(ninguno)"}.`;
     }
+    // Teléfono/email del contacto: campos de sistema con shape distinto (field_code + enum_code).
+    if (f.code === "PHONE" || f.code === "EMAIL") {
+      await patchContactCodeField(ctx.kommoContactId, f.code, value, "WORK", ctx.domain, ctx.token);
+      return `Listo: actualicé el ${f.code === "PHONE" ? "teléfono" : "email"} del contacto a "${value}".`;
+    }
+    if (f.type === "select" || f.type === "multiselect") {
+      const wanted = value.split(/[,;]+/).map((v) => v.trim()).filter(Boolean);
+      const matched = f.enums.filter((e) => wanted.some((w) => norm(w) === norm(e.value)));
+      if (matched.length === 0) {
+        const validos = f.enums.map((e) => `"${e.value}"`).join(", ");
+        return `El campo "${f.name}" es una lista; valores válidos: ${validos || "(ninguno)"}.`;
+      }
+      const enumIds = f.type === "select" ? [matched[0].id] : matched.map((e) => e.id);
+      await patchEntityFieldEnum("contacts", ctx.kommoContactId, f.id, enumIds, ctx.domain, ctx.token);
+      return `Listo: actualicé "${f.name}" del contacto a ${matched.map((e) => `"${e.value}"`).join(", ")}.`;
+    }
     await patchContactField(ctx.kommoContactId, f.id, value, ctx.domain, ctx.token);
     return `Listo: actualicé el campo "${f.name}" del contacto a "${value}".`;
+  }
+
+  if (name === "agregar_nota") {
+    if (!ctx.gate.addNote) return "La acción 'agregar nota' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo agregar la nota.";
+    const texto = String(input.texto ?? "").trim();
+    if (!texto) return "ERROR_VALIDACION: falta 'texto'.";
+    await addLeadNote(ctx.kommoLeadId, texto, ctx.domain, ctx.token);
+    return "Listo: registré la nota interna en el lead (no visible para el cliente).";
+  }
+
+  if (name === "etiquetar_lead") {
+    if (!ctx.gate.tag) return "La acción 'etiquetar lead' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo etiquetar.";
+    const raw = input.etiquetas;
+    const tags = Array.isArray(raw)
+      ? raw.map((t) => String(t).trim()).filter(Boolean)
+      : String(raw ?? "").split(/[,;]+/).map((t) => t.trim()).filter(Boolean);
+    if (tags.length === 0) return "ERROR_VALIDACION: falta 'etiquetas'.";
+    await addLeadTags(ctx.kommoLeadId, tags, ctx.domain, ctx.token);
+    return `Listo: agregué la(s) etiqueta(s) ${tags.map((t) => `"${t}"`).join(", ")} al lead.`;
+  }
+
+  if (name === "transferir_asesor") {
+    if (!ctx.gate.handoff) return "La acción 'transferir a asesor' está desactivada por el operador. No la realices.";
+    if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo transferir.";
+    const motivo = String(input.motivo ?? "").trim();
+    const etapaName = String(input.etapa ?? "").trim();
+    const hechos: string[] = [];
+    // 1) Apagar el agente para este lead (kill-switch configurado por el operador).
+    if (ctx.agentOffFieldId != null) {
+      await setLeadCheckboxField(ctx.kommoLeadId, ctx.agentOffFieldId, true, ctx.domain, ctx.token);
+      hechos.push("apagué el agente para este lead");
+    }
+    // 2) Mover de etapa si se indicó una.
+    if (etapaName) {
+      const stages = await getStages(ctx.domain, ctx.token);
+      const matches = stages.filter((s) => norm(s.name) === norm(etapaName));
+      if (matches.length === 1) {
+        await moveLeadStage(ctx.kommoLeadId, matches[0].id, matches[0].pipelineId, ctx.domain, ctx.token);
+        hechos.push(`moví el lead a "${matches[0].name}"`);
+      }
+    }
+    // 3) Nota interna con el motivo, para el asesor (fail-open: secundaria).
+    if (motivo) {
+      try {
+        await addLeadNote(ctx.kommoLeadId, `Derivado a asesor: ${motivo}`, ctx.domain, ctx.token);
+        hechos.push("dejé una nota para el asesor");
+      } catch {
+        // la nota es secundaria; no romper la derivación.
+      }
+    }
+    return `Listo: derivé el lead a un asesor humano${hechos.length ? ` (${hechos.join("; ")})` : ""}. Decile al cliente que un asesor lo contactará a la brevedad.`;
   }
 
   return `Tool CRM desconocida: "${name}".`;
@@ -960,6 +1057,7 @@ async function runAgent(opts: {
   kommoLeadId: number | null;
   kommoContactId: number | null;
   crm: CrmGate;
+  agentOffFieldId: number | null;
   shopify: ShopifyGate;
   bcvEnabled: boolean;
   // Campos para registrar lead_stage_events cuando el agente mueve etapas
@@ -1038,6 +1136,7 @@ async function runAgent(opts: {
                 domain,
                 token,
                 gate: opts.crm,
+                agentOffFieldId: opts.agentOffFieldId,
                 internalLeadId: opts.leadId,
                 currentKommoStageId: opts.currentKommoStageId,
                 draftId: opts.draftId,
@@ -1147,7 +1246,7 @@ Deno.serve(async (req: Request) => {
   const { data: cfg } = await supabase
     .from("kommo_publish_config")
     .select(
-      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules"
+      "agent_enabled, bypass_review, publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, crm_can_add_note, crm_can_handoff, crm_can_tag, agent_off_field_id, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_instructions, comment_reply_enabled, comment_reply_rules"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -1214,7 +1313,12 @@ Deno.serve(async (req: Request) => {
     moveStage: cfg?.crm_can_move_stage === true,
     updateLead: cfg?.crm_can_update_lead === true,
     updateContact: cfg?.crm_can_update_contact === true,
+    addNote: cfg?.crm_can_add_note === true,
+    handoff: cfg?.crm_can_handoff === true,
+    tag: cfg?.crm_can_tag === true,
   };
+  const agentOffFieldId =
+    cfg?.agent_off_field_id != null ? Number(cfg.agent_off_field_id) : null;
 
   // Gate de Shopify (Módulo 4). Default OFF.
   const shopify: ShopifyGate = {
@@ -1365,6 +1469,7 @@ Deno.serve(async (req: Request) => {
         kommoLeadId: lead.kommo_lead_id != null ? Number(lead.kommo_lead_id) : null,
         kommoContactId: lead.kommo_contact_id != null ? Number(lead.kommo_contact_id) : null,
         crm,
+        agentOffFieldId,
         shopify,
         bcvEnabled: cfg?.bcv_rate_enabled === true,
         currentKommoStageId: lead.kommo_stage_id != null ? Number(lead.kommo_stage_id) : null,

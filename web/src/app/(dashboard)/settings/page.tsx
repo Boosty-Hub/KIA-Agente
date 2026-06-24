@@ -45,9 +45,50 @@ export default async function SettingsPage({
 
   // ── Slot: Conexiones ──────────────────────────────────────────────────────
   const conexiones = (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <KommoWebhookPanel />
-      <ShopifyConnect connected={shopifyStatus.configured} domain={shopifyStatus.domain} />
+    <div className="space-y-4">
+      {/* Mapa end-to-end de la conexión: explica el rol de cada pieza para que el
+          operador entienda qué hace el agente en Kommo y de qué depende. */}
+      <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-sm">
+        <h2 className="text-sm font-semibold tracking-tight text-neutral-900">
+          Cómo funciona la conexión con Kommo
+        </h2>
+        <p className="mt-1 text-xs text-neutral-500">
+          El agente entra y sale por tu cuenta de Kommo usando un solo token (el que cargás al
+          conectar). Estas son las piezas, en orden de flujo:
+        </p>
+        <ol className="mt-3 space-y-2 text-xs text-neutral-600">
+          <li>
+            <span className="font-medium text-neutral-800">1. Entrada.</span> Cuando un lead
+            escribe, Kommo dispara el <span className="font-medium">webhook</span> y el mensaje
+            entra al agente. La URL del webhook la pegás abajo.
+          </li>
+          <li>
+            <span className="font-medium text-neutral-800">2. Salida.</span> El agente escribe su
+            respuesta en el <span className="font-medium">campo del lead</span> configurado y el{" "}
+            <span className="font-medium">salesbot</span> la envía al canal del cliente. Se ajusta
+            en la pestaña <span className="font-medium">Publicación</span>.
+          </li>
+          <li>
+            <span className="font-medium text-neutral-800">3. Acciones en el CRM.</span> Con el{" "}
+            <span className="font-medium">mismo token</span>, el agente puede además mover de
+            etapa, actualizar lead/contacto, dejar notas, etiquetar y derivar a un asesor. Se
+            activan en{" "}
+            <a href="/agent?tab=acciones" className="font-medium text-violet-700 underline">
+              Agente → Acciones
+            </a>
+            .
+          </li>
+          <li>
+            <span className="font-medium text-neutral-800">4. Dependencia.</span> Todo lo anterior{" "}
+            <span className="font-medium">requiere Kommo conectado</span> (el token de abajo). Sin
+            token, ni la publicación ni las acciones CRM se ejecutan.
+          </li>
+        </ol>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <KommoWebhookPanel />
+        <ShopifyConnect connected={shopifyStatus.configured} domain={shopifyStatus.domain} />
+      </div>
     </div>
   );
 

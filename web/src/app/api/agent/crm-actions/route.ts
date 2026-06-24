@@ -16,6 +16,9 @@ const FIELDS = new Set([
   "crm_can_move_stage",
   "crm_can_update_lead",
   "crm_can_update_contact",
+  "crm_can_add_note",
+  "crm_can_handoff",
+  "crm_can_tag",
 ]);
 
 export async function POST(request: Request) {
@@ -51,6 +54,9 @@ export async function POST(request: Request) {
     patch.crm_can_move_stage = false;
     patch.crm_can_update_lead = false;
     patch.crm_can_update_contact = false;
+    patch.crm_can_add_note = false;
+    patch.crm_can_handoff = false;
+    patch.crm_can_tag = false;
   }
 
   const { error } = await supabase
