@@ -87,7 +87,7 @@ export default async function AlertsPage({ searchParams }: { searchParams: { sho
   if (draftRefIds.length > 0) {
     const { data: drs } = await supabase
       .from("drafts")
-      .select("id, messages(lead_id)")
+      .select("id, messages!drafts_message_id_fkey(lead_id)")
       .in("id", draftRefIds);
     for (const d of (drs ?? []) as Array<{
       id: string;
