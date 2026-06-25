@@ -10,10 +10,21 @@ export type KommoPipeline = { id: number; name: string; statuses: KommoStage[] }
  * Returns { configured:false } when Kommo creds are not set yet, so callers can
  * render a "connect Kommo first" state instead of erroring.
  */
+// Cache en memoria de los embudos: cambian rarísimo (editar el funnel en Kommo)
+// pero se consultan en cada apertura de conversación + cada carga de inbox. Sin
+// esto, cada navegación pega a la API de Kommo (200-500ms). TTL 5 min; solo
+// cachea el resultado "configured" (si no hay creds, no cachea para tomarlas al
+// configurarse). Persiste en instancias serverless tibias.
+let pipelinesCache: { data: { configured: boolean; pipelines: KommoPipeline[] }; at: number } | null = null;
+const PIPELINES_TTL_MS = 5 * 60_000;
+
 export async function fetchPipelines(): Promise<{
   configured: boolean;
   pipelines: KommoPipeline[];
 }> {
+  if (pipelinesCache && Date.now() - pipelinesCache.at < PIPELINES_TTL_MS) {
+    return pipelinesCache.data;
+  }
   const { KOMMO_API_DOMAIN: domain, KOMMO_ACCESS_TOKEN: token } = await configValues([
     "KOMMO_API_DOMAIN",
     "KOMMO_ACCESS_TOKEN",
@@ -45,7 +56,9 @@ export async function fetchPipelines(): Promise<{
       color: s.color ?? null,
     })),
   }));
-  return { configured: true, pipelines };
+  const data = { configured: true, pipelines };
+  pipelinesCache = { data, at: Date.now() };
+  return data;
 }
 
 export type KommoUser = { id: number; name: string; email: string | null };
