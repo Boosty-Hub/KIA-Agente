@@ -1,10 +1,8 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { configValue } from "@/lib/runtime-config";
 import { getShopifyStatus } from "@/lib/shopify";
 import { Badge, Button, PageShell, SectionCard, StatCard, inputCls, selectCls } from "@/components/ui";
 import { KommoFieldSelect } from "./kommo-field-select";
 import { KommoWebhookPanel } from "@/components/kommo-webhook-panel";
-import { UpdatesPanel } from "./updates-panel";
 import { ShopifyConnect } from "./shopify-connect";
 import { SettingsTabs, type SettingsTab } from "./settings-tabs";
 
@@ -28,7 +26,6 @@ export default async function SettingsPage({
     .single();
 
   const shopifyStatus = await getShopifyStatus();
-  const autoUpdateEnabled = (await configValue("AUTO_UPDATE_ENABLED")) !== "0";
 
   const saved = searchParams.saved === "1";
   const alertsSaved = searchParams.alerts_saved === "1";
@@ -291,8 +288,6 @@ export default async function SettingsPage({
           ✓ Configuración de alertas guardada
         </div>
       )}
-
-      <UpdatesPanel autoUpdateEnabled={autoUpdateEnabled} />
 
       <SectionCard
         title="Alertas"

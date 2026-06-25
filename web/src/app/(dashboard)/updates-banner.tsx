@@ -23,14 +23,25 @@ type Updates = {
   ok: boolean;
   hasSupabaseEnv: boolean;
   hasToken?: boolean;
+  tokenInvalid?: boolean;
   migrations: { applied: number; total: number; pending: string[] };
   functions: { total: number; items: FnItem[] };
 };
 
-type Phase = "checking" | "available" | "updating" | "done" | "error";
+type Phase =
+  | "checking"
+  | "available"
+  | "updating"
+  | "done"
+  | "error"
+  | "token-invalid";
 
 const AUTO_GUARD = "auto-update-checked";
 const DISMISS_KEY = "updates-banner-dismissed";
+// Clave separada: descartar el aviso informativo de "actualizaciones" NO debe
+// silenciar el aviso accionable de "token vencido" (son fases distintas que
+// comparten este componente).
+const TOKEN_DISMISS_KEY = "updates-banner-token-dismissed";
 
 export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
   const router = useRouter();
@@ -39,6 +50,7 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
   const [progress, setProgress] = useState("");
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [tokenDismissed, setTokenDismissed] = useState(false);
 
   const apply = useCallback(
     async (items: FnItem[]) => {
@@ -87,6 +99,7 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
   useEffect(() => {
     let cancelled = false;
     setDismissed(sessionStorage.getItem(DISMISS_KEY) === "1");
+    setTokenDismissed(sessionStorage.getItem(TOKEN_DISMISS_KEY) === "1");
     (async () => {
       let j: Updates | null = null;
       try {
@@ -104,6 +117,12 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
       // Sin entorno / sin token / sin updates → no se muestra nada.
       if (!j.ok || !j.hasSupabaseEnv || j.hasToken === false) {
         setPhase("checking");
+        return;
+      }
+      // Token guardado pero rechazado (vencido/revocado): NO auto-aplicar
+      // (fallaría con 401→502). Mostramos un aviso para reconectar.
+      if (j.tokenInvalid) {
+        setPhase("token-invalid");
         return;
       }
       const pendingMig = j.migrations?.pending ?? [];
@@ -139,16 +158,22 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
   const detail = parts.join(" · ");
 
   function dismiss() {
-    sessionStorage.setItem(DISMISS_KEY, "1");
-    setDismissed(true);
+    if (phase === "token-invalid") {
+      sessionStorage.setItem(TOKEN_DISMISS_KEY, "1");
+      setTokenDismissed(true);
+    } else {
+      sessionStorage.setItem(DISMISS_KEY, "1");
+      setDismissed(true);
+    }
   }
 
   // Nada que mostrar
   if (phase === "checking") return null;
   if (phase === "available" && (dismissed || count === 0)) return null;
+  if (phase === "token-invalid" && tokenDismissed) return null;
 
   const tone =
-    phase === "error"
+    phase === "error" || phase === "token-invalid"
       ? "border-amber-200 bg-amber-50 text-amber-900"
       : phase === "done"
         ? "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -192,6 +217,32 @@ export function UpdatesBanner({ autoUpdate }: { autoUpdate: boolean }) {
             >
               Configuración
             </a>
+          </>
+        )}
+
+        {phase === "token-invalid" && (
+          <>
+            <span className="shrink-0">⚠️</span>
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">El token de Supabase venció.</span>{" "}
+              <span className="text-amber-800">
+                Reconectá tu Personal Access Token para volver a recibir actualizaciones del sistema.
+              </span>
+            </span>
+            <a
+              href="/settings"
+              className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700"
+            >
+              Reconectar
+            </a>
+            <button
+              type="button"
+              onClick={dismiss}
+              aria-label="Cerrar aviso"
+              className="shrink-0 rounded p-1 text-amber-500 transition-colors hover:bg-amber-100 hover:text-amber-700"
+            >
+              ✕
+            </button>
           </>
         )}
 

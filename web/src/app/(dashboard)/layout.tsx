@@ -2,7 +2,6 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { getBcvRateCached } from "@/lib/exchange";
 import { MobileNav, SidebarNav } from "./nav";
-import { UpdatesBanner } from "./updates-banner";
 
 export default async function DashboardLayout({
   children,
@@ -36,15 +35,11 @@ export default async function DashboardLayout({
   // capacidad está activa; si la fuente falla, simplemente no hay badge.
   const bcv = pubCfg?.bcv_rate_enabled === true ? await getBcvRateCached() : null;
 
-  // Auto-update: ON salvo que el operador lo apague explícitamente ("0").
-  const autoUpdate = (await configValue("AUTO_UPDATE_ENABLED")) !== "0";
-
   return (
     <div className="flex h-dvh overflow-hidden bg-neutral-50">
       <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} />
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} />
-        <UpdatesBanner autoUpdate={autoUpdate} />
         <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
       </div>
     </div>

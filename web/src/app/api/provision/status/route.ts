@@ -7,7 +7,7 @@ import { NextResponse } from "next/server";
 import { MIGRATIONS } from "@/lib/provision/migrations.generated";
 import { FUNCTIONS } from "@/lib/provision/functions.generated";
 import { getRef } from "@/lib/provision/ref";
-import { runQuery } from "@/lib/provision/management";
+import { runQuery, isAuthError } from "@/lib/provision/management";
 import { listFunctions } from "@/lib/provision/management";
 import { listUsersHead } from "@/lib/provision/admin";
 import { readAccessToken } from "@/lib/provision/config-token";
@@ -31,6 +31,10 @@ export interface ProvisionStatus {
   anthropicProvisioned: boolean;
   kommoConnected: boolean;
   nextStep: NextStep;
+  // True cuando hay un token guardado pero el Management API lo rechaza
+  // (vencido/revocado). Informativo: el wizard puede pedir reconectar en vez
+  // de presentar el estado como "DB sin inicializar".
+  tokenInvalid?: boolean;
 }
 
 export async function GET(): Promise<NextResponse> {
@@ -57,6 +61,7 @@ export async function GET(): Promise<NextResponse> {
   let dbInitialized = false;
   let appliedCount = 0;
   let pendingMigrations: string[] = [];
+  let tokenInvalid = false;
 
   // ── Step 1: migrations check ─────────────────────────────────────────────
   try {
@@ -81,7 +86,10 @@ export async function GET(): Promise<NextResponse> {
       // No token yet → can't check migrations
       pendingMigrations = MIGRATIONS.map((m) => m.filename);
     }
-  } catch {
+  } catch (e) {
+    // Token vencido/revocado (401/403): lo señalamos para que el wizard pida
+    // reconectar en vez de leerlo como "DB sin inicializar".
+    if (isAuthError(e)) tokenInvalid = true;
     // _migrations doesn't exist or query failed → DB not initialized
     dbInitialized = false;
     appliedCount = 0;
@@ -104,7 +112,10 @@ export async function GET(): Promise<NextResponse> {
       );
       deployedCount = FUNCTIONS.length - missingFunctions.length;
     }
-  } catch {
+  } catch (e) {
+    // Token vencido/revocado: lo señalamos (igual que el bloque de migraciones)
+    // para no presentar un proyecto ya provisionado como "sin inicializar".
+    if (isAuthError(e)) tokenInvalid = true;
     // Token absent or Management API call failed → treat as none deployed
   }
 
@@ -168,6 +179,7 @@ export async function GET(): Promise<NextResponse> {
     anthropicProvisioned,
     kommoConnected,
     nextStep,
+    tokenInvalid,
   };
 
   return NextResponse.json(status);

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { MIGRATIONS } from "@/lib/provision/migrations.generated";
 import { getRef } from "@/lib/provision/ref";
-import { runQuery } from "@/lib/provision/management";
+import { runQuery, isAuthError } from "@/lib/provision/management";
 import { saveAccessToken, readAccessToken } from "@/lib/provision/config-token";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -32,7 +32,9 @@ async function getApplied(
       "SELECT filename FROM _migrations ORDER BY filename"
     ) as Array<{ filename: string }>;
     return new Set(result.map((r) => r.filename));
-  } catch {
+  } catch (err) {
+    // Nunca enmascarar un token vencido/revocado (lo maneja el catch externo).
+    if (isAuthError(err)) throw err;
     // Table may not exist yet on the very first call
     return new Set();
   }
@@ -141,6 +143,18 @@ export async function POST(request: Request): Promise<NextResponse> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[provision/migrate] Error:", msg);
+    // Token vencido/revocado: error claro y accionable, no un 502 genérico.
+    if (isAuthError(err)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          tokenInvalid: true,
+          error:
+            "El token de Supabase venció o es inválido. Reconectá tu Personal Access Token en Configuración.",
+        },
+        { status: 401 }
+      );
+    }
     return NextResponse.json(
       { ok: false, file: "unknown", error: msg },
       { status: 502 }

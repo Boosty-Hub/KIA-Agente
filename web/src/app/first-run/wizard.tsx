@@ -91,6 +91,44 @@ export function FirstRunWizard() {
     );
   }
 
+  // Token guardado pero rechazado (vencido/revocado): no podemos leer el estado
+  // real, así que un proyecto ya provisionado se vería como "sin inicializar".
+  // Mostramos reconexión en vez de re-arrancar el wizard de inicialización.
+  if (status.tokenInvalid) {
+    return (
+      <div className="min-h-dvh bg-neutral-50 flex items-center justify-center px-4">
+        <div className="max-w-sm w-full rounded-2xl border border-amber-200 bg-white p-6 shadow-modal space-y-4">
+          <p className="text-sm font-medium text-amber-800">
+            El token de Supabase venció
+          </p>
+          <p className="text-xs text-neutral-500">
+            El Personal Access Token guardado fue rechazado por el Management API,
+            así que no se puede verificar el estado del sistema. Reconectá un token
+            nuevo en Configuración.
+          </p>
+          <div className="flex items-center gap-3">
+            <a
+              href="/settings"
+              className="rounded-lg bg-neutral-900 px-3 py-2 text-sm font-medium text-white"
+            >
+              Ir a Configuración
+            </a>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setLoading(true);
+                void fetchStatus();
+              }}
+            >
+              Reintentar
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const step = status.nextStep as FirstRunStep;
 
   return (

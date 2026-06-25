@@ -9,6 +9,7 @@ type Updates = {
   ok: boolean;
   hasSupabaseEnv: boolean;
   hasToken?: boolean;
+  tokenInvalid?: boolean;
   error?: string;
   migrations: { applied: number; total: number; pending: string[] };
   functions: { total: number; items: FnItem[] };
@@ -26,6 +27,7 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
   const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState("");
+  const [savingToken, setSavingToken] = useState(false);
   const [autoOn, setAutoOn] = useState(autoUpdateEnabled);
   const [autoBusy, setAutoBusy] = useState(false);
 
@@ -64,6 +66,30 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
   useEffect(() => {
     check();
   }, [check]);
+
+  // Guarda + revalida un PAT nuevo (camino self-serve de reconexión cuando el
+  // token guardado venció/se revocó). Si el Management API lo acepta, lo
+  // persiste en runtime_config y vuelve a chequear el estado.
+  async function saveToken() {
+    if (!token.trim()) return;
+    setSavingToken(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/provision/save-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken: token.trim() }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      setToken("");
+      await check();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingToken(false);
+    }
+  }
 
   async function runMigrations(): Promise<boolean> {
     for (let i = 0; i < 60; i++) {
@@ -119,7 +145,9 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
   const pendingMig = data?.migrations.pending ?? [];
   const fnsToUpdate = (data?.functions.items ?? []).filter((i) => i.status !== "ok");
   const hasUpdates = pendingMig.length > 0 || fnsToUpdate.length > 0;
-  const needsToken = data?.hasToken === false;
+  // Falta token (no guardado) o el guardado fue rechazado (vencido/revocado).
+  const tokenInvalid = data?.tokenInvalid === true;
+  const needsToken = data?.hasToken === false || tokenInvalid;
 
   return (
     <section className="rounded-xl border border-neutral-200 bg-white p-6 shadow-sm space-y-4">
@@ -150,8 +178,11 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
       ) : needsToken ? (
         <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm text-amber-800">
-            No hay un token de Supabase guardado. Pegá tu Personal Access Token (<span className="font-mono">sbp_…</span>)
-            para poder actualizar.
+            {tokenInvalid
+              ? "El token de Supabase guardado venció o fue revocado (el Management API lo rechaza). "
+              : "No hay un token de Supabase guardado. "}
+            Pegá un Personal Access Token (<span className="font-mono">sbp_…</span>) nuevo
+            para volver a actualizar.
           </p>
           <input
             value={token}
@@ -159,10 +190,29 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
             placeholder="sbp_..."
             className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm font-mono focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900 focus:outline-none"
           />
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={saveToken}
+              disabled={savingToken || !token.trim()}
+              busy={savingToken}
+            >
+              {savingToken ? "Validando…" : "Guardar y revalidar"}
+            </Button>
+            <a
+              href="https://supabase.com/dashboard/account/tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium text-amber-800 underline"
+            >
+              Generar un token nuevo
+            </a>
+          </div>
         </div>
       ) : null}
 
-      {data && data.hasSupabaseEnv && (
+      {data && data.hasSupabaseEnv && !needsToken && (
         <>
           {!hasUpdates ? (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
@@ -217,7 +267,7 @@ export function UpdatesPanel({ autoUpdateEnabled = true }: { autoUpdateEnabled?:
                   type="button"
                   variant="primary"
                   onClick={applyAll}
-                  disabled={working || (needsToken && !token.trim())}
+                  disabled={working}
                   busy={working}
                 >
                   {working ? "Actualizando…" : "Actualizar todo"}

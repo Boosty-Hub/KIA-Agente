@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { FUNCTIONS } from "@/lib/provision/functions.generated";
 import { getRef } from "@/lib/provision/ref";
-import { listFunctions, deployFunction } from "@/lib/provision/management";
+import { listFunctions, deployFunction, isAuthError } from "@/lib/provision/management";
 import { readAccessToken } from "@/lib/provision/config-token";
 import { saveDeployedHash } from "@/lib/provision/function-hashes";
 
@@ -98,8 +98,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       await saveDeployedHash(supabaseUrl, serviceRoleKey, fn.slug, fn.hash);
     }
 
-    // Re-check deployed count after this deploy
-    const nowDeployed = await listFunctions(ref, token).catch(() => [] as typeof FUNCTIONS);
+    // Re-check deployed count after this deploy. Toleramos blips transitorios,
+    // pero un 401/403 debe propagarse al catch externo (→ tokenInvalid), no
+    // quedar enmascarado como "0 desplegadas".
+    const nowDeployed = await listFunctions(ref, token).catch((e) => {
+      if (isAuthError(e)) throw e;
+      return [] as typeof FUNCTIONS;
+    });
     const nowDeployedSlugs = new Set(nowDeployed.map((f) => f.slug));
     const nowMissing = FUNCTIONS.map((f) => f.slug).filter(
       (s) => !nowDeployedSlugs.has(s)
@@ -117,6 +122,18 @@ export async function POST(request: Request): Promise<NextResponse> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[provision/functions/deploy] Error:", msg);
+    // Token vencido/revocado: error claro y accionable, no un 502 genérico.
+    if (isAuthError(err)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          tokenInvalid: true,
+          error:
+            "El token de Supabase venció o es inválido. Reconectá tu Personal Access Token en Configuración.",
+        },
+        { status: 401 }
+      );
+    }
     return NextResponse.json(
       { ok: false, slug: requestedSlug ?? "unknown", error: msg },
       { status: 502 }

@@ -7,11 +7,27 @@ import { NextResponse } from "next/server";
 import { MIGRATIONS } from "@/lib/provision/migrations.generated";
 import { FUNCTIONS } from "@/lib/provision/functions.generated";
 import { getRef } from "@/lib/provision/ref";
-import { runQuery, listFunctions } from "@/lib/provision/management";
+import { runQuery, listFunctions, isAuthError } from "@/lib/provision/management";
 import { readAccessToken } from "@/lib/provision/config-token";
 import { readDeployedHashes } from "@/lib/provision/function-hashes";
 
 type FnStatus = "missing" | "changed" | "ok";
+
+// Respuesta cuando hay un token guardado pero el Management API lo rechaza
+// (401/403 — PAT vencido/revocado). NO inventamos "drift": reportar todas las
+// migraciones pendientes + todas las funciones cambiadas dispararía un
+// auto-update condenado a fallar (502). En su lugar marcamos `tokenInvalid`
+// para que el front muestre un CTA de "reconectá tu token".
+function invalidTokenResponse(totalMig: number, totalFn: number) {
+  return NextResponse.json({
+    ok: true,
+    hasSupabaseEnv: true,
+    hasToken: true,
+    tokenInvalid: true,
+    migrations: { applied: 0, total: totalMig, pending: [] },
+    functions: { total: totalFn, items: [] as { slug: string; status: FnStatus }[] },
+  });
+}
 
 export async function GET(): Promise<NextResponse> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -52,8 +68,10 @@ export async function GET(): Promise<NextResponse> {
     const applied = new Set(rows.map((r) => r.filename));
     appliedCount = applied.size;
     pending = MIGRATIONS.map((m) => m.filename).filter((f) => !applied.has(f));
-  } catch {
-    // _migrations no existe → todas pendientes
+  } catch (e) {
+    // Token vencido/revocado (401/403): cortamos acá, sin fabricar drift.
+    if (isAuthError(e)) return invalidTokenResponse(totalMig, totalFn);
+    // _migrations no existe (DB nueva) → todas pendientes.
     pending = MIGRATIONS.map((m) => m.filename);
   }
 
@@ -75,9 +93,11 @@ export async function GET(): Promise<NextResponse> {
       }
       items.push({ slug: fn.slug, status });
     }
-  } catch {
-    // Management API falló → no podemos saber; marcamos todas como changed
-    // para que el operador pueda forzar el redeploy.
+  } catch (e) {
+    // Token vencido/revocado: reconectar, no redeploy masivo.
+    if (isAuthError(e)) return invalidTokenResponse(totalMig, totalFn);
+    // Management API falló por otra causa → no podemos saber; marcamos todas
+    // como changed para que el operador pueda forzar el redeploy.
     for (const fn of FUNCTIONS) items.push({ slug: fn.slug, status: "changed" });
   }
 
@@ -85,6 +105,7 @@ export async function GET(): Promise<NextResponse> {
     ok: true,
     hasSupabaseEnv: true,
     hasToken: true,
+    tokenInvalid: false,
     migrations: { applied: appliedCount, total: totalMig, pending },
     functions: { total: totalFn, items },
   });

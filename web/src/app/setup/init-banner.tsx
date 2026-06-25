@@ -20,6 +20,48 @@ export function InitBanner() {
 
   if (!status) return null;
 
+  // Token vencido/revocado: NO podemos leer el estado real del proyecto, así que
+  // un proyecto ya provisionado se vería como "incompleto". Mostramos un aviso
+  // de reconexión en vez del falso "Inicialización incompleta".
+  if (status.tokenInvalid) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-3">
+        <svg
+          className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500"
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-hidden
+        >
+          <path
+            d="M8 1.5L1 14h14L8 1.5z"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M8 6v3.5M8 11.5v.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="space-y-0.5">
+          <p className="font-medium">El token de Supabase venció</p>
+          <p className="text-xs text-amber-700">
+            No se puede verificar el estado del sistema.{" "}
+            <a
+              href="/settings"
+              className="font-medium underline underline-offset-2"
+            >
+              Reconectá tu Personal Access Token
+            </a>
+            .
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const incomplete =
     !status.dbInitialized ||
     status.migrationsApplied.pending.length > 0 ||

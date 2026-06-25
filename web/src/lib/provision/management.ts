@@ -8,6 +8,34 @@
 
 const MGMT_BASE = "https://api.supabase.com";
 
+// ─── ERRORS ──────────────────────────────────────────────────────────────────
+
+/**
+ * Error thrown by every Management API helper, carrying the HTTP status so
+ * callers can distinguish an authentication failure (expired/revoked PAT →
+ * 401/403) from a genuine error. WITHOUT this, callers catch a 401 and
+ * misread it as "drift" (all migrations pending / all functions changed),
+ * which then triggers a doomed auto-update that 502s. See updates/route.ts.
+ */
+export class ManagementError extends Error {
+  readonly status: number;
+  readonly body: string;
+  constructor(status: number, message: string, body = "") {
+    super(message);
+    this.name = "ManagementError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/** True when the error is an auth failure (invalid/expired/revoked PAT). */
+export function isAuthError(err: unknown): boolean {
+  return (
+    err instanceof ManagementError &&
+    (err.status === 401 || err.status === 403)
+  );
+}
+
 // ─── QUERY ───────────────────────────────────────────────────────────────────
 
 /**
@@ -33,8 +61,10 @@ export async function runQuery(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `Management API query failed (${res.status}): ${text}`
+    throw new ManagementError(
+      res.status,
+      `Management API query failed (${res.status}): ${text}`,
+      text
     );
   }
 
@@ -68,8 +98,10 @@ export async function listFunctions(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `Management API listFunctions failed (${res.status}): ${text}`
+    throw new ManagementError(
+      res.status,
+      `Management API listFunctions failed (${res.status}): ${text}`,
+      text
     );
   }
 
@@ -133,8 +165,10 @@ export async function deployFunction(
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(
-      `Management API deployFunction '${slug}' failed (${res.status}): ${text}`
+    throw new ManagementError(
+      res.status,
+      `Management API deployFunction '${slug}' failed (${res.status}): ${text}`,
+      text
     );
   }
 
