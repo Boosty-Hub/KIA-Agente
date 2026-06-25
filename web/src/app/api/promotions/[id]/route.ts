@@ -29,8 +29,8 @@ export async function PATCH(
   }
 
   if (body.kind !== undefined) {
-    if (body.kind !== "promo" && body.kind !== "evento")
-      return NextResponse.json({ error: "kind debe ser 'promo' o 'evento'" }, { status: 400 });
+    if (body.kind !== "promo" && body.kind !== "evento" && body.kind !== "situacion")
+      return NextResponse.json({ error: "kind debe ser 'promo', 'evento' o 'situacion'" }, { status: 400 });
     update.kind = body.kind;
   }
 

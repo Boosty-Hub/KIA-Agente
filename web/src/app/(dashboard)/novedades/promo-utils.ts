@@ -1,11 +1,13 @@
-// promo-utils.ts — tipos y helpers de promociones/eventos.
+// promo-utils.ts — tipos y helpers de novedades (promos / eventos / situaciones).
 // CLIENT-SAFE: sin "use client", sin imports de servidor.
+
+export type PromoKind = "promo" | "evento" | "situacion";
 
 export type Promo = {
   id: string;
   name: string;
   content: string;
-  kind: "promo" | "evento";
+  kind: PromoKind;
   starts_at: string | null;
   ends_at: string | null;
   weekdays: number[] | null;
@@ -13,6 +15,29 @@ export type Promo = {
 };
 
 export type PromoStatus = "activa" | "programada" | "finalizada" | "apagada";
+
+// Metadatos de presentación por tipo. La "situación" usa tono ámbar porque es
+// una restricción operativa (el agente la respeta siempre), no una oferta.
+export const KIND_META: Record<
+  PromoKind,
+  { label: string; badge: "neutral" | "violet" | "amber"; hint: string }
+> = {
+  promo: {
+    label: "Promo",
+    badge: "neutral",
+    hint: "El agente la menciona cuando viene al caso de lo que pregunta el lead.",
+  },
+  evento: {
+    label: "Evento",
+    badge: "violet",
+    hint: "El agente puede anticiparlo si aporta a la conversación.",
+  },
+  situacion: {
+    label: "Situación",
+    badge: "amber",
+    hint: "Restricción operativa: el agente la respeta SIEMPRE y avisa con naturalidad (ej: hoy cerrado).",
+  },
+};
 
 // now: Date del cliente (no se computa TZ del negocio en UI; aproximación local del operador).
 export function promoStatus(p: Promo, now: Date): PromoStatus {

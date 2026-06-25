@@ -6,6 +6,33 @@
 //   import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
 
 /**
+ * Kommo guarda los custom fields en una columna MySQL utf8mb3 (3 bytes): CUALQUIER
+ * carácter de 4 bytes (emoji 😊, modificadores de piel, banderas, etc.) TRUNCA el
+ * valor guardado desde ese punto — Kommo loguea el valor completo que mandamos
+ * pero almacena solo hasta el primer emoji (verificado: "¡Hola Mauricio! Bienvenido "
+ * por "…Bienvenido 😊 Vi tu comentario…"). Sacamos los caracteres no-BMP (+ los
+ * joiners/selectores que quedan colgando) antes de escribir para que el TEXTO
+ * completo sobreviva. Los símbolos BMP de 3 bytes (✓, ☀, etc.) se conservan.
+ */
+export function sanitizeKommoFieldValue(value: string): string {
+  // Joiners/selectores BMP que solo tienen sentido pegados a un emoji y quedan
+  // colgando tras sacarlo: ZWJ (200D), variation selector (FE0F), keycap (20E3).
+  const danglers = new Set([0x200d, 0xfe0f, 0x20e3]);
+  let out = "";
+  for (const ch of value) {
+    const cp = ch.codePointAt(0);
+    if (cp === undefined) continue;
+    if (cp > 0xffff) continue; // 4-byte: emojis, banderas, modificadores de piel
+    if (danglers.has(cp)) continue;
+    out += ch;
+  }
+  return out
+    .replace(/[^\S\r\n]{2,}/g, " ")       // colapsa espacios dobles que deja el strip
+    .replace(/[^\S\r\n]+([\r\n])/g, "$1") // saca espacio antes de salto de línea
+    .trim();
+}
+
+/**
  * Actualiza un custom field de un lead en Kommo.
  * Throws si la respuesta no es OK.
  */
@@ -27,7 +54,7 @@ export async function patchLeadField(
       custom_fields_values: [
         {
           field_id: fieldId,
-          values: [{ value }],
+          values: [{ value: sanitizeKommoFieldValue(value) }],
         },
       ],
     }),
@@ -59,7 +86,7 @@ export async function patchContactField(
       custom_fields_values: [
         {
           field_id: fieldId,
-          values: [{ value }],
+          values: [{ value: sanitizeKommoFieldValue(value) }],
         },
       ],
     }),
@@ -219,6 +246,82 @@ export async function fetchEntityFields(
   }));
 }
 
+// ── Datos YA cargados en Kommo (read-only) ───────────────────────────────────
+
+export type KnownLeadData = {
+  contactName: string | null;
+  phones: string[];
+  emails: string[];
+  // Otros custom fields no vacíos (de lead y contacto), por nombre.
+  fields: Array<{ name: string; value: string }>;
+};
+
+type KommoCFV = {
+  field_id?: number;
+  field_name?: string;
+  field_code?: string | null;
+  values?: Array<{ value?: unknown }> | null;
+};
+
+/**
+ * Lee lo que YA está cargado en Kommo para un lead y su contacto: teléfono,
+ * email, nombre del contacto y custom fields no vacíos. Sirve para que el agente
+ * NO vuelva a pedir datos que ya tenemos. Read-only; cada GET falla-abierto
+ * (si uno no responde, devuelve lo que pudo juntar). Las dos llamadas corren en
+ * paralelo (latencia ≈ una sola).
+ */
+export async function fetchKnownLeadData(
+  kommoLeadId: number | null,
+  kommoContactId: number | null,
+  kommoDomain: string,
+  kommoToken: string
+): Promise<KnownLeadData> {
+  const out: KnownLeadData = { contactName: null, phones: [], emails: [], fields: [] };
+  const headers = { Authorization: `Bearer ${kommoToken}` };
+
+  const absorb = (cfv: KommoCFV[] | null | undefined) => {
+    for (const f of cfv ?? []) {
+      const vals = (f.values ?? [])
+        .map((v) => String(v?.value ?? "").trim())
+        .filter(Boolean);
+      if (!vals.length) continue;
+      if (f.field_code === "PHONE") { out.phones.push(...vals); continue; }
+      if (f.field_code === "EMAIL") { out.emails.push(...vals); continue; }
+      out.fields.push({
+        name: (f.field_name ?? `campo ${f.field_id ?? "?"}`).trim(),
+        value: vals.join(", "),
+      });
+    }
+  };
+
+  const loadContact = async () => {
+    if (kommoContactId == null) return;
+    try {
+      const res = await fetch(`https://${kommoDomain}/api/v4/contacts/${kommoContactId}`, { headers });
+      if (!res.ok) return;
+      const j = (await res.json()) as { name?: string; custom_fields_values?: KommoCFV[] | null };
+      out.contactName = j.name?.trim() || null;
+      absorb(j.custom_fields_values);
+    } catch { /* fail-open */ }
+  };
+
+  const loadLead = async () => {
+    if (kommoLeadId == null) return;
+    try {
+      const res = await fetch(`https://${kommoDomain}/api/v4/leads/${kommoLeadId}`, { headers });
+      if (!res.ok) return;
+      const j = (await res.json()) as { custom_fields_values?: KommoCFV[] | null };
+      absorb(j.custom_fields_values);
+    } catch { /* fail-open */ }
+  };
+
+  await Promise.all([loadContact(), loadLead()]);
+
+  out.phones = Array.from(new Set(out.phones));
+  out.emails = Array.from(new Set(out.emails));
+  return out;
+}
+
 /**
  * Dispara un salesbot de Kommo sobre un lead.
  * Endpoint legacy v2 (sigue soportado en cuentas v4).
@@ -266,7 +369,7 @@ export async function addLeadNote(
       Authorization: `Bearer ${kommoToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify([{ note_type: "common", params: { text } }]),
+    body: JSON.stringify([{ note_type: "common", params: { text: sanitizeKommoFieldValue(text) } }]),
   });
   if (!res.ok) {
     throw new Error(`add lead note: ${res.status} ${await res.text()}`);

@@ -1,7 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PageShell } from "@/components/ui";
 import ContentTabs from "./content-tabs";
-import { type Promo } from "./promo-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +11,7 @@ export default async function ContenidoPage({
 }) {
   const supabase = createSupabaseServerClient();
 
-  const [{ data: rawSamples }, { data: rawDocs }, { data: rawPromos }] = await Promise.all([
+  const [{ data: rawSamples }, { data: rawDocs }] = await Promise.all([
     supabase
       .from("voice_samples")
       .select("id, type, title, metadata, ingested_at, created_at")
@@ -20,10 +19,6 @@ export default async function ContenidoPage({
     supabase
       .from("kb_documents")
       .select("id, title, source_type, total_chunks, created_at")
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("promotions")
-      .select("id,name,content,kind,starts_at,ends_at,weekdays,enabled")
       .order("created_at", { ascending: false }),
   ]);
 
@@ -46,18 +41,15 @@ export default async function ContenidoPage({
     createdAt: d.created_at as string,
   }));
 
-  const promos = (rawPromos ?? []) as Promo[];
-
   const rawTab = searchParams.tab;
-  const initialTab: "voz" | "kb" | "promos" =
-    rawTab === "kb" ? "kb" : rawTab === "promos" ? "promos" : "voz";
+  const initialTab: "voz" | "kb" = rawTab === "kb" ? "kb" : "voz";
 
   return (
     <PageShell
       title="Contenido del agente"
       description="El material que moldea cómo responde el agente: su estilo de escritura y los hechos que puede consultar."
     >
-      <ContentTabs initialTab={initialTab} samples={samples} docs={docs} promos={promos} />
+      <ContentTabs initialTab={initialTab} samples={samples} docs={docs} />
     </PageShell>
   );
 }

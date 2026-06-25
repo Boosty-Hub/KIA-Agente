@@ -22,8 +22,10 @@ import {
   addLeadTags,
   patchEntityFieldEnum,
   patchContactCodeField,
+  fetchKnownLeadData,
   type KommoStageLite,
   type KommoFieldLite,
+  type KnownLeadData,
 } from "../_shared/kommo.ts";
 import {
   searchProducts,
@@ -929,7 +931,7 @@ function formatNow(timezone: string): string {
 
 // ---------------- Helpers de promociones/eventos ----------------
 type PromoRow = {
-  name: string; content: string; kind: "promo" | "evento";
+  name: string; content: string; kind: "promo" | "evento" | "situacion";
   starts_at: string | null; ends_at: string | null; weekdays: number[] | null;
 };
 
@@ -966,16 +968,21 @@ const PROMO_TRUNC = 250;
 function truncate(s: string, n: number) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
 function buildPromoContext(rows: PromoRow[], timezone: string): {
-  activePromos: string | null; upcomingEvents: string | null;
+  activePromos: string | null; upcomingEvents: string | null; activeSituations: string | null;
 } {
   const today = localDateParts(timezone);
-  const active = rows.filter((p) => isPromotionActiveToday(p, today)).slice(0, PROMO_CAP)
+  const activeToday = rows.filter((p) => isPromotionActiveToday(p, today));
+  // promo/evento activos → mención opcional; situaciones → restricción aparte.
+  const active = activeToday.filter((p) => p.kind !== "situacion").slice(0, PROMO_CAP)
+    .map((p) => `- ${p.name}: ${truncate(p.content, PROMO_TRUNC)}`);
+  const situations = activeToday.filter((p) => p.kind === "situacion").slice(0, PROMO_CAP)
     .map((p) => `- ${p.name}: ${truncate(p.content, PROMO_TRUNC)}`);
   const upcoming = rows.filter((p) => isUpcomingEvent(p, today)).slice(0, PROMO_CAP)
     .map((p) => `- ${p.name} (desde ${p.starts_at}): ${truncate(p.content, PROMO_TRUNC)}`);
   return {
     activePromos: active.length ? active.join("\n") : null,
     upcomingEvents: upcoming.length ? upcoming.join("\n") : null,
+    activeSituations: situations.length ? situations.join("\n") : null,
   };
 }
 
@@ -1002,6 +1009,21 @@ function buildVehicleCatalog(rows: VehicleRow[]): string | null {
     .join("\n");
 }
 
+// Datos que YA están en Kommo (teléfono/email + custom fields no vacíos), para
+// que el agente no los vuelva a pedir. Teléfono/email se listan SIEMPRE (incluso
+// "(no registrado)") así el agente sabe a ciencia cierta qué falta y qué no.
+const KNOWN_FIELDS_CAP = 12;
+function buildKnownDataBlock(d: KnownLeadData): string {
+  const lines: string[] = [
+    `- teléfono: ${d.phones.length ? d.phones.join(" / ") : "(no registrado)"}`,
+    `- email: ${d.emails.length ? d.emails.join(" / ") : "(no registrado)"}`,
+  ];
+  for (const f of d.fields.slice(0, KNOWN_FIELDS_CAP)) {
+    lines.push(`- ${f.name}: ${truncate(f.value, 120)}`);
+  }
+  return lines.join("\n");
+}
+
 // ---------------- Construir contexto user.message ----------------
 function buildContext(opts: {
   lead: {
@@ -1023,7 +1045,9 @@ function buildContext(opts: {
   businessHours: { active: boolean; label: string };
   activePromos: string | null;
   upcomingEvents: string | null;
+  activeSituations: string | null;
   vehicleCatalog: string | null;
+  knownData: string | null;
   commentInstructions?: string | null;
 }) {
   const cls = opts.classification ?? {};
@@ -1044,10 +1068,10 @@ function buildContext(opts: {
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avisale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
-${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.vehicleCatalog ? `\ncatalogo_vehiculos (ÚNICOS modelos que comercializa el concesionario; precios "Desde" referenciales en USD):\n${opts.vehicleCatalog}\nREGLA: respondé SOLO sobre estos vehículos. Si el lead pregunta por un modelo/marca que no está en esta lista, aclará que no lo manejamos y ofrecé las alternativas del catálogo o derivá a un asesor — nunca inventes precios, modelos ni especificaciones fuera de esta lista.` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
+${opts.activeSituations ? `situaciones_vigentes (CRÍTICO — restricciones operativas reales de HOY; respetalas SIEMPRE, NO son ofertas):\n${opts.activeSituations}\nREGLA: nunca contradigas una situación vigente (p. ej. si dice "hoy cerrado", NO ofrezcas visita ni atención presencial hoy). Si la conversación lo amerita, avisá con naturalidad y empatía y ofrecé la alternativa (seguir por acá, coordinar para otro día).\n` : ""}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.vehicleCatalog ? `\ncatalogo_vehiculos (ÚNICOS modelos que comercializa el concesionario; precios "Desde" referenciales en USD):\n${opts.vehicleCatalog}\nREGLA: respondé SOLO sobre estos vehículos. Si el lead pregunta por un modelo/marca que no está en esta lista, aclará que no lo manejamos y ofrecé las alternativas del catálogo o derivá a un asesor — nunca inventes precios, modelos ni especificaciones fuera de esta lista.` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
-genero_lead: ${opts.lead.gender ?? "desconocido"} (inferido del nombre). Tratá a la persona con la concordancia correcta (bienvenido/bienvenida, etc.); si es "desconocido", usá trato neutro SIN marcar género ni asumirlo.
+${opts.knownData ? `datos_conocidos_del_lead (YA están en Kommo — NO los vuelvas a pedir. Pedí SOLO lo que figure como "(no registrado)" o lo que realmente falte; si necesitás verificar un dato, confirmá el valor que ya figura acá en vez de preguntarlo de cero):\n${opts.knownData}\n` : ""}genero_lead: ${opts.lead.gender ?? "desconocido"} (inferido del nombre). Tratá a la persona con la concordancia correcta (bienvenido/bienvenida, etc.); si es "desconocido", usá trato neutro SIN marcar género ni asumirlo.
 edad_lead: ${opts.lead.age ? `${opts.lead.age} años` : "desconocida"}
 registro_sugerido: ${opts.lead.age_band === "mayor" ? "formal, pausado y explicativo (persona mayor) — explicá cada paso con claridad, sin tecnicismos" : opts.lead.age_band === "joven" ? "casual y cercano (persona joven) — mantené tu tono natural" : "normal (tu registro habitual)"}. Podés ajustar el registro si la conversación da otras señales de edad.
 vertical: ${opts.verticalSlug}
@@ -1463,6 +1487,27 @@ Deno.serve(async (req: Request) => {
         .order("sort_order")
         .order("name");
       const vehicleCatalog = buildVehicleCatalog((rawVehicles ?? []) as VehicleRow[]);
+
+      // Datos que YA están en Kommo (teléfono/email + custom fields del lead y su
+      // contacto) → el agente no los vuelve a pedir. Read-only, fail-open: si Kommo
+      // no está conectado o no responde, el agente sigue sin este bloque.
+      let knownData: string | null = null;
+      try {
+        const kDomain = resolvedCfg.get("KOMMO_API_DOMAIN");
+        const kToken = resolvedCfg.get("KOMMO_ACCESS_TOKEN");
+        if (kDomain && kToken && (lead.kommo_lead_id != null || lead.kommo_contact_id != null)) {
+          const known = await fetchKnownLeadData(
+            lead.kommo_lead_id != null ? Number(lead.kommo_lead_id) : null,
+            lead.kommo_contact_id != null ? Number(lead.kommo_contact_id) : null,
+            kDomain,
+            kToken
+          );
+          knownData = buildKnownDataBlock(known);
+        }
+      } catch (_e) {
+        // fail-open
+      }
+
       // Detección de comentario: si ALGÚN mensaje del batch tiene is_comment=true,
       // inyectamos comment_instructions al agente. LÍNEA ROJA: solo esto cambia
       // del flujo normal (sweep/debounce/guardas/promos/usage intactos).
@@ -1494,7 +1539,9 @@ Deno.serve(async (req: Request) => {
         },
         activePromos: promoCtx.activePromos,
         upcomingEvents: promoCtx.upcomingEvents,
+        activeSituations: promoCtx.activeSituations,
         vehicleCatalog,
+        knownData,
         commentInstructions,
       });
 

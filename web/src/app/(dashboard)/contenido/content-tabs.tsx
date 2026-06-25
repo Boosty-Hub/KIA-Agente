@@ -1,18 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import VoiceUploader from "./voice-uploader";
 import SampleRow from "./sample-row";
 import KBUploader from "./kb-uploader";
 import DocumentRow from "./document-row";
-import PromoCard from "./promo-card";
-import PromoFormModal from "./promo-form-modal";
-import { SectionCard, EmptyState, Button } from "@/components/ui";
-import { Sparkles, Plus } from "@/components/ui/icons";
-import { type Promo } from "./promo-utils";
 
-type Tab = "voz" | "kb" | "promos";
+type Tab = "voz" | "kb";
 
 type VoiceSample = {
   id: string;
@@ -34,52 +28,16 @@ export default function ContentTabs({
   initialTab,
   samples,
   docs,
-  promos,
 }: {
   initialTab: Tab;
   samples: VoiceSample[];
   docs: KBDocument[];
-  promos: Promo[];
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
-  const router = useRouter();
-
-  // Promo modal state
-  const [promoModal, setPromoModal] = useState<{ open: boolean; editing: Promo | null }>({
-    open: false,
-    editing: null,
-  });
-
-  function openCreate() {
-    setPromoModal({ open: true, editing: null });
-  }
-
-  function openEdit(promo: Promo) {
-    setPromoModal({ open: true, editing: promo });
-  }
-
-  function closeModal() {
-    setPromoModal({ open: false, editing: null });
-  }
-
-  async function handleToggle(id: string, next: boolean) {
-    await fetch(`/api/promotions/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: next }),
-    });
-    router.refresh();
-  }
-
-  async function handleDelete(id: string) {
-    await fetch(`/api/promotions/${id}`, { method: "DELETE" });
-    router.refresh();
-  }
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "voz", label: "Estilo de voz" },
     { key: "kb", label: "Base de conocimiento" },
-    { key: "promos", label: "Promos y eventos" },
   ];
 
   return (
@@ -210,64 +168,6 @@ export default function ContentTabs({
           </section>
         </div>
       )}
-
-      {/* Tab: Promos y eventos */}
-      {tab === "promos" && (
-        <div className="space-y-6">
-          <SectionCard
-            icon={<Sparkles size={18} />}
-            title="Crear promo o evento"
-            description="El agente mencionará las promos activas en cada respuesta cuando sean relevantes."
-            action={
-              <Button variant="primary" size="sm" leftIcon={<Plus size={14} />} onClick={openCreate}>
-                Nueva
-              </Button>
-            }
-          >
-            <p className="text-xs text-neutral-500">
-              Las promos activas se inyectan automáticamente en el contexto del agente. Podés activar/desactivar
-              cada una sin borrarla, y fijar fechas o días de la semana para que apliquen solo cuando corresponde.
-            </p>
-          </SectionCard>
-
-          {promos.length === 0 ? (
-            <EmptyState
-              icon={<Sparkles size={24} />}
-              title="Sin promos ni eventos"
-              description="Creá la primera promo para que el agente empiece a mencionarla en sus respuestas."
-              action={
-                <Button variant="primary" size="sm" leftIcon={<Plus size={14} />} onClick={openCreate}>
-                  Crear primera promo
-                </Button>
-              }
-            />
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {promos.map((promo) => (
-                <PromoCard
-                  key={promo.id}
-                  promo={promo}
-                  onToggle={handleToggle}
-                  onEdit={openEdit}
-                  onDelete={handleDelete}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Promo form modal (shared across create/edit) */}
-      <PromoFormModal
-        key={promoModal.editing?.id ?? "new"}
-        open={promoModal.open}
-        initial={promoModal.editing}
-        onClose={closeModal}
-        onSaved={() => {
-          closeModal();
-          router.refresh();
-        }}
-      />
     </div>
   );
 }

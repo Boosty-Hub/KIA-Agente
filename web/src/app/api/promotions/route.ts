@@ -20,8 +20,8 @@ export async function POST(request: Request) {
 
   // Validar kind
   const kind = String(body.kind ?? "promo");
-  if (kind !== "promo" && kind !== "evento") {
-    return NextResponse.json({ error: "kind debe ser 'promo' o 'evento'" }, { status: 400 });
+  if (kind !== "promo" && kind !== "evento" && kind !== "situacion") {
+    return NextResponse.json({ error: "kind debe ser 'promo', 'evento' o 'situacion'" }, { status: 400 });
   }
 
   // Validar starts_at / ends_at
