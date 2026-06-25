@@ -10,6 +10,7 @@ import { getRef } from "@/lib/provision/ref";
 import { listFunctions, deployFunction, isAuthError } from "@/lib/provision/management";
 import { readAccessToken } from "@/lib/provision/config-token";
 import { saveDeployedHash } from "@/lib/provision/function-hashes";
+import { guardProvisionStoredToken } from "@/lib/auth/guard";
 
 export async function POST(request: Request): Promise<NextResponse> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -33,6 +34,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Token: del body, o el guardado en runtime_config (centro de updates).
   let token = accessToken && typeof accessToken === "string" ? accessToken.trim() : "";
+  // Sin token en el body usaríamos el PAT guardado: post-first-run exige admin.
+  if (serviceRoleKey) {
+    const provGuard = await guardProvisionStoredToken(supabaseUrl, serviceRoleKey, !!token);
+    if (provGuard) return provGuard;
+  }
   if (!token && serviceRoleKey) token = (await readAccessToken(supabaseUrl, serviceRoleKey)) ?? "";
   if (!token) {
     return NextResponse.json(

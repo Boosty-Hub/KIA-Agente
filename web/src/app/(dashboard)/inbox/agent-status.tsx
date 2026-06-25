@@ -85,7 +85,15 @@ const DOT_CLS: Record<AgentStatusTone, string> = {
   red: "bg-red-500",
 };
 
-export function AgentStatusBadge({ status }: { status: AgentStatus }) {
+export function AgentStatusBadge({
+  status,
+  isAdmin = true,
+}: {
+  status: AgentStatus;
+  // El link de "arreglar" lleva a páginas solo-admin (/settings, /agent). Para un
+  // editor esos links terminarían en un redirect a /inbox → mostramos solo el texto.
+  isAdmin?: boolean;
+}) {
   return (
     <div className="mt-1.5 space-y-1">
       <span
@@ -98,7 +106,7 @@ export function AgentStatusBadge({ status }: { status: AgentStatus }) {
       {status.tone !== "green" && (
         <p className="text-[11px] leading-snug text-neutral-500">
           {status.detail}
-          {status.fixHref && (
+          {isAdmin && status.fixHref && (
             <>
               {" "}
               <a href={status.fixHref} className="font-medium text-neutral-700 underline">

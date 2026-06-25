@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { PasswordInput } from "@/components/ui/password-input";
 import { inputCls, labelCls } from "@/components/ui/styles";
 
 function validate(email: string, password: string, confirm: string) {
@@ -128,13 +129,11 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
           <label className={labelCls} htmlFor="fr-password">
             Contraseña
           </label>
-          <input
+          <PasswordInput
             id="fr-password"
-            type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Mínimo 8 caracteres"
-            className={inputCls}
             disabled={running}
             autoComplete="new-password"
           />
@@ -147,13 +146,11 @@ export function CreateUser({ onComplete }: { onComplete: () => void }) {
           <label className={labelCls} htmlFor="fr-confirm">
             Confirmar contraseña
           </label>
-          <input
+          <PasswordInput
             id="fr-confirm"
-            type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Repetí la contraseña"
-            className={inputCls}
             disabled={running}
             autoComplete="new-password"
           />

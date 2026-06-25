@@ -8,6 +8,7 @@ import { MIGRATIONS } from "@/lib/provision/migrations.generated";
 import { getRef } from "@/lib/provision/ref";
 import { runQuery, isAuthError } from "@/lib/provision/management";
 import { saveAccessToken, readAccessToken } from "@/lib/provision/config-token";
+import { guardProvisionStoredToken } from "@/lib/auth/guard";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Token: del body, o el guardado en runtime_config (así el centro de updates
   // no necesita manejar el token en el cliente).
   let token = accessToken && typeof accessToken === "string" ? accessToken.trim() : "";
+  // Sin token en el body usaríamos el PAT guardado: post-first-run exige admin.
+  const provGuard = await guardProvisionStoredToken(supabaseUrl, serviceRoleKey, !!token);
+  if (provGuard) return provGuard;
   if (!token) token = (await readAccessToken(supabaseUrl, serviceRoleKey)) ?? "";
   if (!token) {
     return NextResponse.json(

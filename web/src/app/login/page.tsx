@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { PasswordInput } from "@/components/ui/password-input";
 import { inputCls, errorCls } from "@/components/ui/styles";
 
 export default function LoginPage() {
@@ -72,14 +73,12 @@ export default function LoginPage() {
           >
             Contraseña
           </label>
-          <input
+          <PasswordInput
             id="password"
-            type="password"
             autoComplete="current-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className={inputCls}
           />
         </div>
         {error && <p className={errorCls}>{error}</p>}

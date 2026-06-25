@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireAdmin } from "@/lib/auth/guard";
 
 // Configura el campo "Apagar Agente": guarda el id (+ nombre) del campo de Kommo
-// que actúa como interruptor por lead. null = desactivado.
+// que actúa como interruptor por lead. null = desactivado. Solo-admin (config).
 export async function POST(request: Request) {
+  const g = await requireAdmin();
+  if ("res" in g) return g.res;
   const supabase = createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const body = await request.json();
   const id = Number(body.fieldId);

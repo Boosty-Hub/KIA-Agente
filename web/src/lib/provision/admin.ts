@@ -65,7 +65,8 @@ export async function createUser(
   supabaseUrl: string,
   serviceRoleKey: string,
   email: string,
-  password: string
+  password: string,
+  role?: "admin" | "editor"
 ): Promise<CreatedUser> {
   const res = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
     method: "POST",
@@ -78,6 +79,9 @@ export async function createUser(
       email,
       password,
       email_confirm: true, // INVARIANT: always true
+      // El rol vive en app_metadata (server-set, va en el JWT). Sin rol explícito
+      // → el lector lo trata como admin (legacy/master). Ver lib/auth/roles.ts.
+      ...(role ? { app_metadata: { role } } : {}),
     }),
   });
 
@@ -89,4 +93,99 @@ export async function createUser(
   }
 
   return res.json() as Promise<CreatedUser>;
+}
+
+// ─── MANAGE USERS (módulo /usuarios, admin-only) ─────────────────────────────
+
+export interface AdminUser {
+  id: string;
+  email: string | null;
+  role: "admin" | "editor";
+  created_at: string;
+  last_sign_in_at: string | null;
+}
+
+interface RawAdminUser {
+  id: string;
+  email?: string | null;
+  app_metadata?: { role?: string } | null;
+  created_at: string;
+  last_sign_in_at?: string | null;
+}
+
+function toAdminUser(u: RawAdminUser): AdminUser {
+  return {
+    id: u.id,
+    email: u.email ?? null,
+    role: u.app_metadata?.role === "editor" ? "editor" : "admin",
+    created_at: u.created_at,
+    last_sign_in_at: u.last_sign_in_at ?? null,
+  };
+}
+
+/** Lista TODOS los usuarios (paginado de a 100, tope defensivo de 20 páginas). */
+export async function listAllUsers(
+  supabaseUrl: string,
+  serviceRoleKey: string
+): Promise<AdminUser[]> {
+  const out: AdminUser[] = [];
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(
+      `${supabaseUrl}/auth/v1/admin/users?page=${page}&per_page=100`,
+      {
+        cache: "no-store",
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+      }
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Admin listUsers failed (${res.status}): ${text}`);
+    }
+    const json = (await res.json()) as { users?: RawAdminUser[] };
+    const users = json.users ?? [];
+    for (const u of users) out.push(toAdminUser(u));
+    if (users.length < 100) break;
+  }
+  return out;
+}
+
+/** Actualiza password y/o rol (app_metadata se mergea, no se pisa). */
+export async function updateAuthUser(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  userId: string,
+  patch: { password?: string; role?: "admin" | "editor" }
+): Promise<void> {
+  const body: Record<string, unknown> = {};
+  if (patch.password) body.password = patch.password;
+  if (patch.role) body.app_metadata = { role: patch.role };
+  const res = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+    method: "PUT",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Admin updateUser failed (${res.status}): ${text}`);
+  }
+}
+
+/** Borra un usuario. */
+export async function deleteAuthUser(
+  supabaseUrl: string,
+  serviceRoleKey: string,
+  userId: string
+): Promise<void> {
+  const res = await fetch(`${supabaseUrl}/auth/v1/admin/users/${userId}`, {
+    method: "DELETE",
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Admin deleteUser failed (${res.status}): ${text}`);
+  }
 }

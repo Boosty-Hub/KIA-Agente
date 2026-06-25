@@ -13,6 +13,7 @@ import { NextResponse } from "next/server";
 import { getRef } from "@/lib/provision/ref";
 import { runQuery, isAuthError } from "@/lib/provision/management";
 import { saveAccessToken } from "@/lib/provision/config-token";
+import { requireAdminPostFirstRun } from "@/lib/auth/guard";
 
 export async function POST(request: Request): Promise<NextResponse> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -24,6 +25,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 503 }
     );
   }
+
+  // Muta el PAT guardado (config sensible): post-first-run exige sesión admin.
+  const guard = await requireAdminPostFirstRun(supabaseUrl, serviceRoleKey);
+  if (guard) return guard;
 
   let body: { accessToken?: string };
   try {

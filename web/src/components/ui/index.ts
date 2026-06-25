@@ -20,6 +20,7 @@ export * from "./form-field";
 export * from "./stat-card";
 export * from "./stat-row";
 export * from "./section-card";
+export * from "./password-input";
 
 // Íconos
 export * from "./icons";

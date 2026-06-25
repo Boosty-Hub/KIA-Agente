@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3, Car, Clock,
+  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3, Car, Clock, Shield,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
 
@@ -17,6 +17,8 @@ type NavItem = {
   href: string;
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
+  // true → solo visible para admin. Los editores ven solo operación + contenido.
+  adminOnly?: boolean;
 };
 
 type NavGroup = {
@@ -24,7 +26,8 @@ type NavGroup = {
   items: NavItem[];
 };
 
-// Grupos de sección (NO cambia rutas).
+// Grupos de sección (NO cambia rutas). `adminOnly` espeja lib/auth/roles.ts:
+// un editor solo ve inbox, leads, contenido, novedades, vehículos y alertas.
 const NAV_GROUPS: NavGroup[] = [
   {
     label: "Operación",
@@ -39,20 +42,21 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/contenido", label: "Contenido", icon: Layers },
       { href: "/novedades", label: "Novedades", icon: Clock },
       { href: "/vehiculos", label: "Vehículos", icon: Car },
-      { href: "/verticales", label: "Verticales", icon: Target },
-      { href: "/outcomes", label: "Outcomes", icon: Sparkles },
-      { href: "/consumo", label: "Consumo", icon: BarChart3 },
-      { href: "/dreams", label: "Dreams", icon: Stars },
+      { href: "/verticales", label: "Verticales", icon: Target, adminOnly: true },
+      { href: "/outcomes", label: "Outcomes", icon: Sparkles, adminOnly: true },
+      { href: "/consumo", label: "Consumo", icon: BarChart3, adminOnly: true },
+      { href: "/dreams", label: "Dreams", icon: Stars, adminOnly: true },
     ],
   },
   {
     label: "Configuración",
     items: [
-      { href: "/agent", label: "Agente", icon: Bot },
-      { href: "/tools", label: "Tools", icon: Wrench },
-      { href: "/seguimiento", label: "Seguimiento", icon: Repeat },
+      { href: "/agent", label: "Agente", icon: Bot, adminOnly: true },
+      { href: "/tools", label: "Tools", icon: Wrench, adminOnly: true },
+      { href: "/seguimiento", label: "Seguimiento", icon: Repeat, adminOnly: true },
       { href: "/alerts", label: "Alertas", icon: Bell },
-      { href: "/settings", label: "Settings", icon: Settings },
+      { href: "/usuarios", label: "Usuarios", icon: Shield, adminOnly: true },
+      { href: "/settings", label: "Settings", icon: Settings, adminOnly: true },
     ],
   },
 ];
@@ -104,32 +108,38 @@ function NavItemLink({
 
 function NavGroups({
   alertsCount,
+  isAdmin,
   onNavigate,
 }: {
   alertsCount: number;
+  isAdmin: boolean;
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
   return (
     <nav className="flex-1 overflow-y-auto px-3 py-2">
-      {NAV_GROUPS.map((group) => (
-        <div key={group.label}>
-          <p className="px-3 pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
-            {group.label}
-          </p>
-          <div className="space-y-0.5">
-            {group.items.map((item) => (
-              <NavItemLink
-                key={item.href}
-                item={item}
-                pathname={pathname}
-                alertsCount={alertsCount}
-                onNavigate={onNavigate}
-              />
-            ))}
+      {NAV_GROUPS.map((group) => {
+        const items = group.items.filter((item) => isAdmin || !item.adminOnly);
+        if (items.length === 0) return null;
+        return (
+          <div key={group.label}>
+            <p className="px-3 pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+              {group.label}
+            </p>
+            <div className="space-y-0.5">
+              {items.map((item) => (
+                <NavItemLink
+                  key={item.href}
+                  item={item}
+                  pathname={pathname}
+                  alertsCount={alertsCount}
+                  onNavigate={onNavigate}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </nav>
   );
 }
@@ -176,11 +186,13 @@ export function SidebarNav({
   alertsCount,
   label,
   bcv,
+  isAdmin,
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
+  isAdmin: boolean;
 }) {
   const agentLabel = label || ENV_AGENT_LABEL;
   const initial = agentLabel.charAt(0).toUpperCase();
@@ -197,7 +209,7 @@ export function SidebarNav({
         </p>
       </div>
 
-      <NavGroups alertsCount={alertsCount} />
+      <NavGroups alertsCount={alertsCount} isAdmin={isAdmin} />
 
       {/* Pill BCV compacto sobre el footer de usuario */}
       {bcv && (
@@ -216,11 +228,13 @@ export function MobileNav({
   alertsCount,
   label,
   bcv,
+  isAdmin,
 }: {
   email: string;
   alertsCount: number;
   label?: string;
   bcv?: BcvData;
+  isAdmin: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const agentLabel = label || ENV_AGENT_LABEL;
@@ -278,6 +292,7 @@ export function MobileNav({
             </div>
             <NavGroups
               alertsCount={alertsCount}
+              isAdmin={isAdmin}
               onNavigate={() => setOpen(false)}
             />
             <NavFooter email={email} onNavigate={() => setOpen(false)} />

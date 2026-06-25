@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue } from "@/lib/runtime-config";
 import { getBcvRateCached } from "@/lib/exchange";
+import { roleFromUser } from "@/lib/auth/roles";
 import { MobileNav, SidebarNav } from "./nav";
 
 export default async function DashboardLayout({
@@ -26,6 +27,7 @@ export default async function DashboardLayout({
 
   const email = user?.email ?? "";
   const alerts = alertsCount ?? 0;
+  const isAdmin = roleFromUser(user) === "admin";
   // Resolve the branding label DB-first (editable from /agent) with env
   // fallback. Resolved server-side so it does NOT depend on the build-time
   // NEXT_PUBLIC_AGENT_LABEL inlining.
@@ -37,9 +39,9 @@ export default async function DashboardLayout({
 
   return (
     <div className="flex h-dvh overflow-hidden bg-neutral-50">
-      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} />
+      <SidebarNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} />
+        <MobileNav email={email} alertsCount={alerts} label={label} bcv={bcv ?? undefined} isAdmin={isAdmin} />
         <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
       </div>
     </div>

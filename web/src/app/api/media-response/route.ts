@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { configValue, setConfigValues } from "@/lib/runtime-config";
+import { requireAdmin } from "@/lib/auth/guard";
 
 // Habilita/deshabilita que el agente responda a adjuntos del lead.
 // images/documents son nativos en Claude. audio requiere transcripción
 // externa (OpenAI Whisper): para activarlo hace falta una OPENAI_API_KEY
 // en runtime_config (se puede mandar acá mismo como body.openaiKey).
+// Solo-admin: muta kommo_publish_config y puede guardar la OPENAI_API_KEY.
 export async function POST(request: Request) {
+  const g = await requireAdmin();
+  if ("res" in g) return g.res;
   const supabase = createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const body = await request.json();
   const update: Record<string, unknown> = {};
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
             { status: 400 }
           );
         }
-        await setConfigValues({ OPENAI_API_KEY: incomingKey }, user.email ?? "dashboard");
+        await setConfigValues({ OPENAI_API_KEY: incomingKey }, g.user.email ?? "dashboard");
       } else {
         const existing = await configValue("OPENAI_API_KEY");
         if (!existing) {

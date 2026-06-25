@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { roleFromUser } from "@/lib/auth/roles";
 import { Badge, StatRow, StatCard, EmptyState, Inbox as InboxIcon, MessageSquare, Alert } from "@/components/ui";
 import { timeAgo } from "@/lib/time-ago";
 import RealtimeRefresher from "./realtime-refresher";
@@ -63,6 +64,10 @@ export default async function InboxPage({
   searchParams: SearchParams;
 }) {
   const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const isAdmin = roleFromUser(user) === "admin";
   const selectedLead = searchParams.lead ?? null;
 
   // 1) Leads activos (con al menos un mensaje, ordenados por último mensaje)
@@ -517,7 +522,7 @@ export default async function InboxPage({
                         </p>
                       );
                     })()}
-                    {agentStatus && <AgentStatusBadge status={agentStatus} />}
+                    {agentStatus && <AgentStatusBadge status={agentStatus} isAdmin={isAdmin} />}
                   </div>
                   {lead.hasReviewPending && (
                     <div className="shrink-0"><Badge color="amber">review pending</Badge></div>

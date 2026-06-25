@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { roleFromUser, isAdminOnlyPath } from "@/lib/auth/roles";
 
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -67,6 +68,22 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (user && pathname === "/login") {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.pathname = "/inbox";
+    return NextResponse.redirect(redirectUrl);
+  }
+
+  // ── Gate por rol ──────────────────────────────────────────────────────────
+  // Un editor no accede a los módulos solo-admin (config técnica + usuarios).
+  // Chokepoint único: cubre páginas Y rutas API. getUser() trae app_metadata
+  // fresco del servidor, así un cambio de rol aplica en el acto.
+  if (user && roleFromUser(user) === "editor" && isAdminOnlyPath(pathname)) {
+    if (pathname.startsWith("/api/")) {
+      return new NextResponse(
+        JSON.stringify({ error: "forbidden", message: "Requiere rol admin." }),
+        { status: 403, headers: { "content-type": "application/json" } }
+      );
+    }
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/inbox";
     return NextResponse.redirect(redirectUrl);
