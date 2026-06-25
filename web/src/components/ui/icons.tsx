@@ -321,6 +321,18 @@ export function BarChart3({ size = 18, ...props }: IconProps) {
   );
 }
 
+/** Auto / vehículos */
+export function Car({ size = 18, ...props }: IconProps) {
+  return (
+    <svg {...base(size)} {...props}>
+      <path d="M5 17H3v-5l2.5-5.5A2 2 0 0 1 7.3 5h9.4a2 2 0 0 1 1.8 1.5L21 12v5h-2" />
+      <circle cx="7.5" cy="17" r="1.5" />
+      <circle cx="16.5" cy="17" r="1.5" />
+      <path d="M5 12h16" />
+    </svg>
+  );
+}
+
 /** Dreams / estrellas/luna */
 export function Stars({ size = 18, ...props }: IconProps) {
   return (

@@ -394,7 +394,7 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
-  let body: { period?: string } = {};
+  let body: { period?: string; force?: boolean } = {};
   try {
     const text = await req.text();
     if (text) body = JSON.parse(text);
@@ -402,10 +402,44 @@ Deno.serve(async (req: Request) => {
     // ignore
   }
   const period = (body.period === "weekly" ? "weekly" : "daily") as Period;
+  // `force` = corrida manual desde el dashboard: ignora on/off y frecuencia.
+  const force = body.force === true;
 
   try {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
+
+    // ---- Gating configurable desde /dreams (solo para corridas por cron) ----
+    // DREAMS_ENABLED: "false" apaga Dreams por completo (diario + semanal).
+    // DREAMS_EVERY_DAYS: el análisis diario corre solo si pasaron >= N días
+    //   desde la última corrida diaria (DREAMS_LAST_DAILY). El semanal no se
+    //   ve afectado por la frecuencia, solo por el on/off.
+    if (!force) {
+      const enabled = cfg.getOr("DREAMS_ENABLED", "true") !== "false";
+      if (!enabled) {
+        return new Response(
+          JSON.stringify({ ok: true, period, skipped: "disabled" }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (period === "daily") {
+        const everyDays = Math.max(1, parseInt(cfg.getOr("DREAMS_EVERY_DAYS", "1"), 10) || 1);
+        const last = cfg.get("DREAMS_LAST_DAILY");
+        if (last) {
+          const today = new Date().toISOString().slice(0, 10);
+          const elapsed = Math.floor(
+            (Date.parse(today + "T00:00:00Z") - Date.parse(last + "T00:00:00Z")) / 86_400_000
+          );
+          if (elapsed < everyDays) {
+            return new Response(
+              JSON.stringify({ ok: true, period, skipped: "frequency", elapsed, everyDays }),
+              { status: 200, headers: { "content-type": "application/json" } }
+            );
+          }
+        }
+      }
+    }
+
     const anthropic = new Anthropic({ apiKey: cfg.require("ANTHROPIC_API_KEY") });
     const memstoreMaster = cfg.require("ANTHROPIC_MEMORY_MASTER_ID");
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
@@ -414,6 +448,18 @@ Deno.serve(async (req: Request) => {
       rawPolicy === "error" || rawPolicy === "none" ? rawPolicy : "all";
 
     const result = await runDreams(period, anthropic, memstoreMaster, operator, policy, cfg);
+
+    // Registrar la fecha de la última corrida diaria para la frecuencia (cada N días).
+    if (period === "daily") {
+      const today = new Date().toISOString().slice(0, 10);
+      await supabase
+        .from("runtime_config")
+        .upsert(
+          { key: "DREAMS_LAST_DAILY", value: today, updated_at: new Date().toISOString(), updated_by: "dreams-run" },
+          { onConflict: "key" }
+        );
+    }
+
     return new Response(JSON.stringify({ ok: true, period, ...result }), {
       status: 200,
       headers: { "content-type": "application/json" },

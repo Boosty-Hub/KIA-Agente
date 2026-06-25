@@ -440,6 +440,8 @@ type Classification = {
   requires_human_review: boolean;
   confidence: number;
   reasoning: string;
+  inferred_gender: "masculino" | "femenino" | "desconocido"; // del NOMBRE del lead
+  mentioned_age: number; // años si el lead los menciona; 0 si no
 };
 
 async function classify(
@@ -449,7 +451,8 @@ async function classify(
   anthropic: Anthropic,
   operator: string,
   model: string,
-  media?: MediaForClassify | null
+  media?: MediaForClassify | null,
+  leadName?: string
 ): Promise<Classification & { media_summary?: string; __usage?: Anthropic.Usage }> {
   const verticalList = verticals
     .map((v) => `  - ${v.slug}: ${v.description ?? "(sin descripción)"}`)
@@ -470,7 +473,9 @@ Reglas:
 - urgency: 1 (casual) a 5 (urgente — cliente molesto, urgencia explícita).
 - toxicity: 0 (neutro/positivo) a 1 (insulto directo).
 - confidence: qué tan seguro estás de la vertical asignada.
-- reasoning: 1-2 frases en español neutro explicando por qué.`;
+- reasoning: 1-2 frases en español neutro explicando por qué.
+- inferred_gender: inferí el género probable de la persona SOLO a partir de su NOMBRE${leadName ? ` (el nombre del lead es: "${leadName}")` : " (no hay nombre disponible en este caso)"}. Devolvé "masculino" o "femenino" únicamente si el nombre lo indica con claridad; si es unisex, ambiguo, un nombre de empresa, un nombre extranjero poco común, o no hay nombre → "desconocido". NUNCA lo deduzcas del contenido del mensaje, solo del nombre.
+- mentioned_age: si el lead MENCIONA EXPLÍCITAMENTE su edad en el mensaje (ej: "tengo 62 años", "soy una señora de la tercera edad" → estimá, "ya estoy jubilado" → 0 si no hay número), devolvé el número de años. Si no menciona edad, devolvé 0. No inventes ni estimes a partir del estilo de escritura.`;
 
   // Contenido del turno: texto, o bloque de media + texto cuando hay adjunto.
   // deno-lint-ignore no-explicit-any
@@ -514,6 +519,8 @@ Reglas:
             confidence: { type: "number" },
             reasoning: { type: "string" },
             media_summary: { type: "string" },
+            inferred_gender: { type: "string", enum: ["masculino", "femenino", "desconocido"] },
+            mentioned_age: { type: "integer" },
           },
           required: [
             "vertical_slug",
@@ -524,6 +531,8 @@ Reglas:
             "confidence",
             "reasoning",
             "media_summary",
+            "inferred_gender",
+            "mentioned_age",
           ],
         },
       },
@@ -537,8 +546,34 @@ Reglas:
   parsed.urgency = Math.max(1, Math.min(5, Math.round(parsed.urgency ?? 1)));
   parsed.toxicity = Math.max(0, Math.min(1, parsed.toxicity ?? 0));
   parsed.confidence = Math.max(0, Math.min(1, parsed.confidence ?? 0));
+  // Normaliza demografía (structured outputs no soportan defaults/min/max).
+  if (parsed.inferred_gender !== "masculino" && parsed.inferred_gender !== "femenino") {
+    parsed.inferred_gender = "desconocido";
+  }
+  parsed.mentioned_age = Math.max(0, Math.round(parsed.mentioned_age ?? 0));
   parsed.__usage = response.usage;
   return parsed;
+}
+
+// Persiste género (inferido del nombre, una sola vez) y edad (cuando el lead la
+// menciona) en el lead, para que generate-response los inyecte al contexto.
+async function storeLeadDemographics(
+  leadId: string,
+  cls: Pick<Classification, "inferred_gender" | "mentioned_age">
+): Promise<void> {
+  try {
+    if (cls.inferred_gender === "masculino" || cls.inferred_gender === "femenino") {
+      // is('gender', null) → solo lo setea la primera vez; no pisa correcciones.
+      await supabase.from("leads").update({ gender: cls.inferred_gender }).eq("id", leadId).is("gender", null);
+    }
+    const age = Math.round(cls.mentioned_age ?? 0);
+    if (age > 0 && age < 120) {
+      const band = age >= 55 ? "mayor" : age >= 25 ? "adulto" : "joven";
+      await supabase.from("leads").update({ age, age_band: band }).eq("id", leadId);
+    }
+  } catch (e) {
+    console.error("storeLeadDemographics:", e instanceof Error ? e.message : String(e));
+  }
 }
 
 // ---- Transcripción de audio (OpenAI Whisper) ----
@@ -824,8 +859,11 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       }
 
       try {
-        const cls = await classify(text, channel, verticals, anthropic, operator, classifyModel, mediaForClassify);
+        const leadName = isInbound ? (m.author?.name ?? undefined) : undefined;
+        const cls = await classify(text, channel, verticals, anthropic, operator, classifyModel, mediaForClassify, leadName);
         const v = verticalsBySlug.get(cls.vertical_slug);
+        // Género (del nombre) + edad (si la mencionó) → al lead para el contexto.
+        await storeLeadDemographics(leadId, cls);
         // Si clasificamos un adjunto, guardamos su descripción como contenido del
         // mensaje, así el agente (y el inbox) tienen texto con qué trabajar.
         const extra: Record<string, unknown> = {};
@@ -914,18 +952,23 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 // persistida (0035) se re-clasifican con imagen; sin URL → revisión humana.
 const RECOVER_BATCH = 10;
 
-async function recoverFailedClassifications(anthropic: Anthropic, operator: string): Promise<number> {
+async function recoverFailedClassifications(
+  anthropic: Anthropic,
+  operator: string,
+  opts: { leadIds?: string[]; limit?: number; newestFirst?: boolean } = {}
+): Promise<number> {
   try {
-    const { data: rows } = await supabase
+    let q = supabase
       .from("messages")
-      .select("id, lead_id, content, source, media_url, media_kind, classification")
+      .select("id, lead_id, content, source, media_url, media_kind, classification, leads(display_name)")
       .eq("direction", "inbound")
       .eq("ignored", false)
       .is("vertical_id", null)
       .not("classification->error", "is", null)
-      .not("classification->>error", "like", "recover:%")
-      .order("created_at", { ascending: true })
-      .limit(RECOVER_BATCH);
+      .not("classification->>error", "like", "recover:%");
+    if (opts.leadIds && opts.leadIds.length) q = q.in("lead_id", opts.leadIds);
+    q = q.order("created_at", { ascending: !opts.newestFirst }).limit(opts.limit ?? RECOVER_BATCH);
+    const { data: rows } = await q;
     if (!rows || rows.length === 0) return 0;
 
     const runtimeCfg = await loadConfig(supabase);
@@ -955,7 +998,9 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
       }
       const text = isPlaceholder ? "" : (msg.content ?? "");
       try {
-        const cls = await classify(text, msg.source ?? "unknown", verticals, anthropic, operator, classifyModel, mediaForClassify);
+        // deno-lint-ignore no-explicit-any
+        const leadName = (msg as any).leads?.display_name ?? undefined;
+        const cls = await classify(text, msg.source ?? "unknown", verticals, anthropic, operator, classifyModel, mediaForClassify, leadName);
         const v = verticalsBySlug.get(cls.vertical_slug);
         const extra: Record<string, unknown> = {};
         if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
@@ -975,6 +1020,8 @@ async function recoverFailedClassifications(anthropic: Anthropic, operator: stri
             .eq("id", msg.id)
             .is("vertical_id", null);
         }
+        // Género (del nombre) + edad (si la mencionó) → al lead, igual que el flujo normal.
+        await storeLeadDemographics(msg.lead_id, cls);
         await recordUsage(supabase, {
           component: "classify", model: classifyModel,
           inputTokens: cls.__usage?.input_tokens,
@@ -1080,11 +1127,58 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
+  // deno-lint-ignore no-explicit-any
+  let body: any = {};
+  try {
+    const t = await req.text();
+    if (t) body = JSON.parse(t);
+  } catch {
+    // body opcional
+  }
   try {
     // Resolve config at request time: DB-first, then env fallback.
     const cfg = await loadConfig(supabase);
     const anthropic = new Anthropic({ apiKey: cfg.require("ANTHROPIC_API_KEY") });
     const operator = cfg.getOr("OPERATOR_NAME", "el operador");
+
+    // --- Reclasificación dirigida: reprocesar conversaciones puntuales ---
+    // POST { reclassify_lead_ids: [<uuid>...] } → reclasifica TODOS los mensajes
+    // fallidos de esos leads (más nuevos primero) y dispara generate-response por
+    // lead. Útil para recuperar conversaciones tras un corte (p.ej. sin crédito).
+    if (Array.isArray(body.reclassify_lead_ids) && body.reclassify_lead_ids.length) {
+      const leadIds = body.reclassify_lead_ids.slice(0, 50).map(String);
+      const healed = await recoverFailedClassifications(anthropic, operator, {
+        leadIds,
+        limit: 500,
+        newestFirst: true,
+      });
+      let triggered = 0;
+      for (const leadId of leadIds) {
+        const { data: m } = await supabase
+          .from("messages")
+          .select("id")
+          .eq("lead_id", leadId)
+          .eq("direction", "inbound")
+          .not("vertical_id", "is", null)
+          .is("answered_by_draft_id", null)
+          .eq("ignored", false)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (m?.id) {
+          await fetch(`${SUPABASE_URL}/functions/v1/generate-response`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message_id: m.id }),
+          }).catch((e) => console.warn("trigger generate-response failed:", e));
+          triggered++;
+        }
+      }
+      return new Response(
+        JSON.stringify({ ok: true, mode: "reclassify", leadIds, healed, triggered }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
 
     const result = await processBatch(anthropic, operator);
 

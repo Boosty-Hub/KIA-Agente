@@ -55,6 +55,7 @@ export function AgentTabs({
   media,
   agentOff,
   crm,
+  publishingEnabled,
   shopify,
   shopifyConnected,
   bcvEnabled,
@@ -75,6 +76,7 @@ export function AgentTabs({
   media: MediaFlags;
   agentOff: AgentOff;
   crm: CrmFlags;
+  publishingEnabled: boolean;
   shopify: ShopifyFlags;
   shopifyConnected: boolean;
   bcvEnabled: boolean;
@@ -124,7 +126,7 @@ export function AgentTabs({
 
       {tab === "acciones" && (
         <div className="space-y-6">
-          <CrmActionsPanel initial={crm} />
+          <CrmActionsPanel initial={crm} publishingEnabled={publishingEnabled} />
           <ShopifyActionsPanel initial={shopify} connected={shopifyConnected} />
           <BcvPanel initialEnabled={bcvEnabled} hasCustomSource={bcvHasCustomSource} />
           <CommentsPanel initial={comments} />

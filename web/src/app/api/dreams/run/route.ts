@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   const res = await fetch(`${supabaseUrl}/functions/v1/dreams-run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ period }),
+    body: JSON.stringify({ period, force: true }),
   });
   const data = await res.json();
   return NextResponse.json(data, { status: res.ok ? 200 : 500 });

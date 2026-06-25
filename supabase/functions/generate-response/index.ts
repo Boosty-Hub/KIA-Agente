@@ -900,7 +900,7 @@ async function pickLeadBatch(
 async function getLead(leadId: string) {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, kommo_lead_id, kommo_contact_id, display_name, channel, kommo_stage_id")
+    .select("id, kommo_lead_id, kommo_contact_id, display_name, channel, kommo_stage_id, gender, age, age_band")
     .eq("id", leadId)
     .single();
   if (error) throw new Error(`lead ${leadId}: ${error.message}`);
@@ -979,9 +979,39 @@ function buildPromoContext(rows: PromoRow[], timezone: string): {
   };
 }
 
+// ---------------- Catálogo de vehículos ----------------
+// El agente SOLO puede ofrecer/hablar de los vehículos activos de la tabla
+// `vehicles`. Se inyecta entero en cada sesión (catálogo chico) — no requiere
+// search_kb. Si el lead pregunta por algo fuera de esta lista, el agente lo
+// deriva en vez de inventar.
+type VehicleRow = {
+  name: string;
+  price_usd: number | null;
+  description: string | null;
+};
+
+function formatUsd(price: number | null): string {
+  if (price === null || price === undefined) return "consultar";
+  return "Desde $" + Math.round(price).toLocaleString("en-US");
+}
+
+function buildVehicleCatalog(rows: VehicleRow[]): string | null {
+  if (!rows.length) return null;
+  return rows
+    .map((v) => `- ${v.name} — ${formatUsd(v.price_usd)}${v.description ? `: ${v.description.trim()}` : ""}`)
+    .join("\n");
+}
+
 // ---------------- Construir contexto user.message ----------------
 function buildContext(opts: {
-  lead: { id: string; display_name: string | null; channel: string | null };
+  lead: {
+    id: string;
+    display_name: string | null;
+    channel: string | null;
+    gender?: string | null;
+    age?: number | null;
+    age_band?: string | null;
+  };
   messages: Array<{ content: string; created_at: string }>;
   verticalSlug: string;
   channel: string | null;
@@ -993,6 +1023,7 @@ function buildContext(opts: {
   businessHours: { active: boolean; label: string };
   activePromos: string | null;
   upcomingEvents: string | null;
+  vehicleCatalog: string | null;
   commentInstructions?: string | null;
 }) {
   const cls = opts.classification ?? {};
@@ -1013,9 +1044,12 @@ function buildContext(opts: {
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avisale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
-${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
+${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.vehicleCatalog ? `\ncatalogo_vehiculos (ÚNICOS modelos que comercializa el concesionario; precios "Desde" referenciales en USD):\n${opts.vehicleCatalog}\nREGLA: respondé SOLO sobre estos vehículos. Si el lead pregunta por un modelo/marca que no está en esta lista, aclará que no lo manejamos y ofrecé las alternativas del catálogo o derivá a un asesor — nunca inventes precios, modelos ni especificaciones fuera de esta lista.` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
+genero_lead: ${opts.lead.gender ?? "desconocido"} (inferido del nombre). Tratá a la persona con la concordancia correcta (bienvenido/bienvenida, etc.); si es "desconocido", usá trato neutro SIN marcar género ni asumirlo.
+edad_lead: ${opts.lead.age ? `${opts.lead.age} años` : "desconocida"}
+registro_sugerido: ${opts.lead.age_band === "mayor" ? "formal, pausado y explicativo (persona mayor) — explicá cada paso con claridad, sin tecnicismos" : opts.lead.age_band === "joven" ? "casual y cercano (persona joven) — mantené tu tono natural" : "normal (tu registro habitual)"}. Podés ajustar el registro si la conversación da otras señales de edad.
 vertical: ${opts.verticalSlug}
 channel: ${opts.channel ?? "unknown"}
 intent: ${cls.intent ?? "?"}
@@ -1421,6 +1455,14 @@ Deno.serve(async (req: Request) => {
         .select("name, content, kind, starts_at, ends_at, weekdays")
         .eq("enabled", true);
       const promoCtx = buildPromoContext((rawPromos ?? []) as PromoRow[], timezone);
+      // Catálogo de vehículos activos — el agente solo puede ofrecer estos.
+      const { data: rawVehicles } = await supabase
+        .from("vehicles")
+        .select("name, price_usd, description")
+        .eq("enabled", true)
+        .order("sort_order")
+        .order("name");
+      const vehicleCatalog = buildVehicleCatalog((rawVehicles ?? []) as VehicleRow[]);
       // Detección de comentario: si ALGÚN mensaje del batch tiene is_comment=true,
       // inyectamos comment_instructions al agente. LÍNEA ROJA: solo esto cambia
       // del flujo normal (sweep/debounce/guardas/promos/usage intactos).
@@ -1452,6 +1494,7 @@ Deno.serve(async (req: Request) => {
         },
         activePromos: promoCtx.activePromos,
         upcomingEvents: promoCtx.upcomingEvents,
+        vehicleCatalog,
         commentInstructions,
       });
 

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   Menu, X, Inbox, Users, Layers, Target, Sparkles, Stars,
-  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3,
+  Bot, Wrench, Repeat, Bell, Settings, LogOut, BarChart3, Car,
 } from "@/components/ui";
 import { BcvBanner } from "./bcv-banner";
 
@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Contenido y calidad",
     items: [
       { href: "/contenido", label: "Contenido", icon: Layers },
+      { href: "/vehiculos", label: "Vehículos", icon: Car },
       { href: "/verticales", label: "Verticales", icon: Target },
       { href: "/outcomes", label: "Outcomes", icon: Sparkles },
       { href: "/consumo", label: "Consumo", icon: BarChart3 },

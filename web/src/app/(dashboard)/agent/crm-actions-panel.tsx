@@ -23,7 +23,13 @@ const FIELD: Record<keyof CrmFlags, string> = {
   tag: "crm_can_tag",
 };
 
-export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
+export function CrmActionsPanel({
+  initial,
+  publishingEnabled = false,
+}: {
+  initial: CrmFlags;
+  publishingEnabled?: boolean;
+}) {
   const [flags, setFlags] = useState<CrmFlags>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +92,18 @@ export function CrmActionsPanel({ initial }: { initial: CrmFlags }) {
 
   return (
     <div className="space-y-6">
+      {/* Aviso de coherencia: si está publicando en Kommo pero las acciones del
+          CRM están apagadas, el agente responde pero NO mueve etapas / etiqueta /
+          toma notas / deriva. */}
+      {publishingEnabled && !flags.enabled && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          ⚠️ <span className="font-semibold">Estás publicando respuestas en Kommo</span>, pero las
+          acciones del CRM están apagadas: el agente contesta pero{" "}
+          <span className="font-medium">no mueve etapas, ni etiqueta, ni toma notas, ni deriva</span>.
+          Para que opere el embudo completo, activá las acciones acá abajo.
+        </div>
+      )}
+
       {/* Master */}
       <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-sm">
         <div className="flex items-start justify-between gap-4">
