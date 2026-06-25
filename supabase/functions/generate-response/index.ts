@@ -1089,13 +1089,16 @@ ${block}
 
 Procede según tu system prompt: revisa ${opts.masterPath}/voice/ y ${opts.masterPath}/dreams/ para reglas, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
 
-Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead. Sin preámbulo.`;
+Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead, envuelto OBLIGATORIAMENTE en los tags <respuesta>…</respuesta> (sin nada antes ni después). Escribí el mensaje DIRIGIDO al cliente (tuteo, en segunda persona), NO un resumen de lo que hiciste. PROHIBIDO: narrar tus acciones o hablar del lead en tercera persona (ej: "¡Listo! He respondido a <nombre> con…", "He creado la memoria del lead…", "La respuesta va dentro del horario…"). Eso NO es la respuesta — la planificación va en mensajes ANTERIORES. Si no hay tags <respuesta> tu salida se descarta y va a revisión humana.`;
 }
 
 // ---------------- Orquestar sesión CMA ----------------
 type Outcome = {
   responseText: string;
   rawResponseText: string;
+  // false si el agente NO emitió los tags <respuesta>…</respuesta> (output
+  // malformado / meta-narración). En ese caso NO se auto-publica.
+  hadRespuesta: boolean;
   toolCalls: number;
   durationMs: number;
   sessionId: string;
@@ -1267,13 +1270,17 @@ async function runAgent(opts: {
   }
 
   // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>.
-  // Si no hay tags, usar el último texto (fallback).
+  // Si NO hay tags, el output está malformado (el modelo a veces narra sus
+  // acciones — "He respondido a X con…" — en vez de responder). Devolvemos
+  // hadRespuesta=false para que el caller NO lo auto-publique (va a revisión).
   const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
+  const hadRespuesta = match != null;
   const clean = (match ? match[1] : responseText).trim();
 
   return {
     responseText: clean,
     rawResponseText: responseText.trim(),
+    hadRespuesta,
     toolCalls,
     durationMs: Date.now() - start,
     sessionId: session.id,
@@ -1636,7 +1643,13 @@ Deno.serve(async (req: Request) => {
       //  - vertical conversacional (auto_reply sin requires_review) → approved.
       //  - resto → pending.
       const batchNeedsReview = batchMsgs.some((m) => m.requires_human_review === true);
-      const status = forceReview
+      // GUARDA: si el agente no emitió los tags <respuesta> el output es
+      // malformado (meta-narración / alucinación de acciones). NUNCA se
+      // auto-publica — va a revisión humana, sin importar bypass/auto_reply.
+      const malformed = !outcome.hadRespuesta;
+      const status = malformed
+        ? "pending"
+        : forceReview
         ? "pending"
         : bypass
         ? "approved"
@@ -1645,6 +1658,11 @@ Deno.serve(async (req: Request) => {
         : vertical.auto_reply && !vertical.requires_review
         ? "approved"
         : "pending";
+      if (malformed) {
+        console.warn(
+          `generate-response: draft ${draft.id} sin tags <respuesta> (lead ${batch.leadId}) → revisión, no se auto-publica`
+        );
+      }
 
       await supabase
         .from("drafts")
@@ -1657,6 +1675,7 @@ Deno.serve(async (req: Request) => {
             duration_ms: outcome.durationMs,
             model: resolvedCfg.getOr("AGENT_MODEL", "claude-sonnet-4-6"),
             vertical: vertical.slug,
+            ...(malformed ? { malformed: true } : {}),
             ...(batchHasComment ? { from_comment: true } : {}),
             ...(publicReply ? { public_reply: publicReply } : {}),
           },
