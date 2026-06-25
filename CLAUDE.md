@@ -146,13 +146,25 @@ Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en 
 
 - **Resilient boot**: el middleware (`src/middleware.ts` → `lib/supabase/middleware.ts`) detecta la ausencia de env vars de Supabase y redirige todo (excepto `/first-run/**`, `/api/provision/**`, `/_next/**`, `/favicon.ico`) al wizard de configuracion inicial. Nunca lanza un 500 aunque el entorno esté vacío.
 - **`/first-run/` invariante**: ningún archivo bajo `web/src/app/first-run/` ni bajo `web/src/app/api/provision/` puede importar `@/lib/runtime-config` ni `@/lib/supabase/service` — ambos módulos lanzan si las vars de entorno no están presentes. Los componentes y routes de provision construyen sus clientes inline con `createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, ...)`.
-- Single-user: usuario master se loguea; el `(dashboard)/layout.tsx` hace `getUser()` (hay 2 round-trips de auth por navegación — optimización pendiente conocida).
+- Multi-usuario con **roles** (`admin` | `editor`) — ver sección "Usuarios y roles". El `(dashboard)/layout.tsx` hace `getUser()` (hay 2 round-trips de auth por navegación — optimización pendiente conocida) y resuelve `isAdmin` para el nav.
 - Todas las páginas del dashboard son `export const dynamic = "force-dynamic"`. **Cada módulo tiene su `loading.tsx`** (re-exporta el del grupo `(dashboard)/loading.tsx`) para feedback instantáneo al navegar: sin un `loading.tsx` a nivel de hoja, la navegación lateral entre módulos no muestra fallback ("parece que no funcionó el clic").
 - **Perf Kommo**: `fetchPipelines` (`lib/kommo.ts`) cachea 5 min en memoria — se invoca en cada apertura de conversación + carga de inbox; sin cache, cada navegación pegaba a la API de Kommo (200–500ms). Abrir conversación además llama `fetchLeadStage` (etapa en vivo) — optimización pendiente.
 - **Realtime**: `messages`/`drafts`/`leads`/`alerts` publicados (migración 0008/0011); componentes `realtime-refresher`/`realtime` hacen `router.refresh()` con debounce.
 - Filtros Inbox/Leads: server-side por `searchParams`, componente compartido `(dashboard)/inbox/filters.tsx` (prop `collapsible` para el inbox). Inbox preserva los filtros en los links de conversación vía `filterQS`.
-- RLS en todas las tablas: `authenticated` tiene acceso total (solo el master entra); `service_role` (Edge Functions) bypassea.
+- RLS en todas las tablas: `authenticated` tiene acceso total; `service_role` (Edge Functions) bypassea. La separación admin/editor NO es por RLS sino por **gate de rol a nivel app** (middleware + rutas) — ver "Usuarios y roles".
 - Branding: el título del dashboard se resuelve **DB-first** (`runtime_config.NEXT_PUBLIC_AGENT_LABEL`, editable en `/agent`) en `(dashboard)/layout.tsx` y se pasa como prop al `nav` — NO depende del inlining build-time de `NEXT_PUBLIC_AGENT_LABEL`. Fallback al env var y, si no, default "Agente". El login sí usa el env var build-time.
+
+### Usuarios y roles
+
+- **El rol vive en Supabase Auth `app_metadata.role`** (`admin` | `editor`), server-set vía Admin API, viaja en el JWT y lo devuelve `getUser()` (fresco del servidor → un cambio de rol aplica en el acto). **No hay tabla de perfiles ni RLS de rol.** `roleFromUser()` (`lib/auth/roles.ts`): un usuario **sin rol explícito = admin** (el master/legacy nunca pierde acceso); solo `role==="editor"` baja a editor. Todos los usuarios creados desde el módulo llevan rol explícito.
+- **Permisos**: **admin** = todo + gestión de usuarios. **editor** = solo operación + contenido: inbox, leads, novedades, vehículos, contenido, alertas. Todo lo demás (settings, agente, tools, verticales, seguimiento, dreams, outcomes, consumo, usuarios, setup) es **solo-admin**.
+- **Enforcement (defensa en profundidad)**:
+  - **Chokepoint único** en el middleware (`lib/supabase/middleware.ts`): si `role==="editor"` y `isAdminOnlyPath(pathname)` → 403 (rutas `/api/*`) o redirect a `/inbox` (páginas). `ADMIN_ONLY_PREFIXES` lista páginas + APIs; el match es exacto o `prefix+"/"` (así `/api/agent` NO bloquea `/api/agent-off`, que se lista aparte). Cubre páginas y APIs en un solo lugar.
+  - `requireAdmin()` (`lib/auth/guard.ts`) en las rutas sensibles (`/api/users/*`, `/api/agent-off`, `/api/media-response`) como backstop.
+  - La página `/usuarios` revalida rol server-side (redirect si no-admin); el `nav` filtra los ítems `adminOnly`.
+  - **Rutas `/api/provision/*`** (migrate/deploy/save-token): `guardProvisionStoredToken`/`requireAdminPostFirstRun` exigen admin **post-first-run** (cuando ya hay ≥1 usuario). El wizard de first-run (sin usuarios todavía) y los deploys que mandan el PAT en el body siguen pasando.
+- **Módulo `/usuarios`** (solo-admin): listar/crear (email+password+rol)/cambiar rol/resetear password/borrar, vía Admin API (`lib/provision/admin.ts`: `listAllUsers`/`updateAuthUser`/`deleteAuthUser`). **Guardas anti-lockout**: no auto-degradarse ni auto-borrarse, ni dejar el sistema sin admins (con rollback compensatorio en la degradación + aviso si el rollback falla).
+- **Ojito de contraseña**: componente `PasswordInput` (`components/ui/password-input.tsx`, ícono Eye/EyeOff) en login, alta de usuario (first-run), update-password y `/usuarios`.
 
 ## Convenciones y gotchas
 
@@ -185,5 +197,6 @@ Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en 
 | Acciones del agente en Kommo (gates) + Comentarios IG | Dashboard `/agent → Acciones` |
 | Seguimiento automático (secuencia, plantillas, salesbots, horario, on/off) | Dashboard `/seguimiento` (tablas `follow_up_*`) |
 | Schedule de Dreams (on/off, cada N días) + política de activación | Dashboard `/dreams` |
+| Usuarios del panel + roles (admin/editor) | Dashboard `/usuarios` (rol en `app_metadata.role`; solo-admin) |
 | Modelo por componente (agente, clasificador, dreams, graders, comentarios) | Dashboard `/consumo` (→ `runtime_config.*_MODEL`; AGENT_MODEL además re-sincroniza el agente) |
 | Secretos de arranque (irreducibles) | Host env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` |
