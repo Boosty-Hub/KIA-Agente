@@ -14,6 +14,13 @@ const KEY = "DEPLOYED_FUNCTION_HASHES";
 function makeClient(supabaseUrl: string, serviceRoleKey: string) {
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
+    // no-store: los hashes desplegados cambian con cada deploy; sin esto Next
+    // puede cachear la lectura y el centro de actualizaciones marca funciones
+    // como "changed" eternamente.
+    global: {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, cache: "no-store" }),
+    },
   });
 }
 

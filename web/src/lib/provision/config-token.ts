@@ -18,6 +18,13 @@ const KEY = "SUPABASE_ACCESS_TOKEN";
 function makeClient(supabaseUrl: string, serviceRoleKey: string) {
   return createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
+    // no-store: el token vive en runtime_config y puede rotar. Sin esto, Next
+    // (en Netlify) puede cachear la lectura y devolver un token viejo/inválido,
+    // haciendo que el centro de actualizaciones reporte falsos pendientes (401).
+    global: {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, cache: "no-store" }),
+    },
   });
 }
 

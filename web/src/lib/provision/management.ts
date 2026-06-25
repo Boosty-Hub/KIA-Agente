@@ -22,6 +22,7 @@ export async function runQuery(
     `${MGMT_BASE}/v1/projects/${ref}/database/query`,
     {
       method: "POST",
+      cache: "no-store",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
