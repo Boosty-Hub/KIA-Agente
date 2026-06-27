@@ -9,6 +9,7 @@ import ScrollToBottom from "./scroll-to-bottom";
 import ReviewActions from "./review-actions";
 import ChannelIcon from "./channel-icon";
 import InboxFilters from "./filters";
+import LeadList from "./lead-list";
 import { fetchPipelines, fetchLeadStage } from "@/lib/kommo";
 import { configValue } from "@/lib/runtime-config";
 import { KommoLeadLink } from "./kommo-lead-link";
@@ -77,7 +78,7 @@ export default async function InboxPage({
       "id, display_name, channel, kommo_lead_id, kommo_stage_id, last_message_at, messages!inner(id, content, direction, requires_human_review, created_at, classification, verticals(slug))"
     )
     .order("last_message_at", { ascending: false, nullsFirst: false })
-    .limit(50);
+    .limit(500);
 
   // Trabajamos lead-by-lead: para cada uno sacamos el último mensaje y flag de review
   type LeadRow = {
@@ -408,62 +409,25 @@ export default async function InboxPage({
             )}
           </div>
           <div className="flex-1 overflow-y-auto">
-            {leadRows.length === 0 ? (
-              <p className="p-5 text-sm text-neutral-500">Sin conversaciones todavía.</p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {leadRows.map((l) => {
-                  const name = l.display_name ?? `Lead ${l.kommo_lead_id ?? "?"}`;
-                  const active = selectedLead === l.id;
-                  return (
-                    <li key={l.id}>
-                      <Link
-                        href={`/inbox?lead=${l.id}${filterQS ? `&${filterQS}` : ""}`}
-                        className={
-                          "block px-4 py-3 transition-colors " +
-                          (active ? "bg-brand-soft" : "hover:bg-neutral-50")
-                        }
-                      >
-                        <div className="flex items-start gap-3">
-                          <div className={
-                            "flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold " +
-                            (active ? "bg-brand text-brand-foreground" : "bg-neutral-100 text-neutral-600")
-                          }>
-                            {initials(name)}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline justify-between gap-2">
-                              <p className={
-                                "truncate text-sm font-medium " +
-                                (active ? "text-brand-strong" : "text-neutral-900")
-                              }>
-                                {name}
-                              </p>
-                              <span className="shrink-0 text-[11px] text-neutral-400">
-                                {l.last_message_at ? timeAgo(l.last_message_at) : "—"}
-                              </span>
-                            </div>
-                            {l.lastMsg && (
-                              <p className="mt-0.5 truncate text-xs text-neutral-500">
-                                {l.lastMsg.direction === "outbound" ? "→ " : ""}
-                                {l.lastMsg.content}
-                              </p>
-                            )}
-                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                              {l.channel && (
-                                <ChannelIcon channel={l.channel} size={16} className="shrink-0" />
-                              )}
-                              {l.lastMsg?.vertical && <Badge color="blue">{l.lastMsg.vertical}</Badge>}
-                              {l.hasReviewPending && <Badge color="amber">revisión</Badge>}
-                            </div>
-                          </div>
-                        </div>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+            <LeadList
+              leads={leadRows.map((l) => ({
+                id: l.id,
+                display_name: l.display_name,
+                channel: l.channel,
+                kommo_lead_id: l.kommo_lead_id,
+                last_message_at: l.last_message_at,
+                lastMsg: l.lastMsg
+                  ? {
+                      content: l.lastMsg.content,
+                      direction: l.lastMsg.direction,
+                      vertical: l.lastMsg.vertical,
+                    }
+                  : null,
+                hasReviewPending: l.hasReviewPending,
+              }))}
+              selectedLead={selectedLead}
+              filterQS={filterQS}
+            />
           </div>
         </aside>
 
