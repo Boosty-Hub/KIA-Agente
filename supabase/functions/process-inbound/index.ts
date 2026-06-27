@@ -587,8 +587,14 @@ const MAX_AUDIO_BYTES = 24_000_000; // límite de Whisper ~25MB
 // media de Kommo/amoCRM (verificados en payloads reales: amojo.kommo.com,
 // <subdominio>.amocrm.com). URL fuera del allowlist → falla → human review.
 const AUDIO_HOST_SUFFIXES = [".kommo.com", ".amocrm.com", ".amocrm.ru", ".amojo.me"];
+// Hosts permitidos como DESTINO de un redirect (no como URL inicial). Kommo
+// sirve el adjunto desde amojo/drive-c.kommo.com con un 301 final hacia Google
+// Cloud Storage (storage.googleapis.com), donde está el archivo real. Es un
+// host PÚBLICO de Google (jamás resuelve a una IP interna), seguro como destino
+// de redirect — pero NO lo aceptamos como URL inicial del webhook.
+const AUDIO_REDIRECT_HOST_SUFFIXES = [...AUDIO_HOST_SUFFIXES, ".googleapis.com"];
 
-function assertAllowedAudioUrl(raw: string): URL {
+function assertAllowedAudioUrl(raw: string, suffixes: string[] = AUDIO_HOST_SUFFIXES): URL {
   let u: URL;
   try {
     u = new URL(raw);
@@ -599,10 +605,39 @@ function assertAllowedAudioUrl(raw: string): URL {
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
   // Nunca IPs literales (v4 o v6) — solo hostnames de los dominios esperados.
   if (/^[\d.]+$/.test(host) || host.includes(":")) throw new Error("audio host no permitido");
-  if (!AUDIO_HOST_SUFFIXES.some((s) => host.endsWith(s) || host === s.slice(1))) {
+  if (!suffixes.some((s) => host.endsWith(s) || host === s.slice(1))) {
     throw new Error(`audio host no permitido: ${host}`);
   }
   return u;
+}
+
+// Extensiones de audio que Whisper acepta. Whisper detecta el formato por la
+// EXTENSIÓN del filename, no por el contenido — y Kommo miente: el adjunto se
+// llama file.ogg pero el contenido real suele ser audio/mp4 (m4a). Si le
+// pasamos la extensión equivocada, Whisper devuelve 400 "Invalid file format".
+const WHISPER_EXT_RE = /\.(flac|m4a|mp3|mp4|mpeg|mpga|oga|ogg|wav|webm)$/i;
+
+// Content-Type real → extensión que Whisper entiende. Es la fuente AUTORITATIVA
+// (más confiable que el nombre del archivo o el path de la URL).
+const CONTENT_TYPE_EXT: Record<string, string> = {
+  "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/aac": "m4a",
+  "audio/mpeg": "mp3", "audio/mp3": "mp3",
+  "audio/ogg": "ogg", "audio/opus": "ogg", "application/ogg": "ogg",
+  "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+  "audio/webm": "webm", "video/webm": "webm",
+  "audio/flac": "flac", "audio/x-flac": "flac",
+};
+
+function audioFilename(contentType: string | null, finalUrl: URL, fallback?: string): string {
+  // 1) Content-Type real (autoritativo).
+  const ct = (contentType ?? "").split(";")[0].trim().toLowerCase();
+  if (CONTENT_TYPE_EXT[ct]) return `audio.${CONTENT_TYPE_EXT[ct]}`;
+  // 2) Extensión del path de la URL final, si es una soportada.
+  const base = finalUrl.pathname.split("/").pop() ?? "";
+  if (WHISPER_EXT_RE.test(base)) return base;
+  // 3) Nombre que dio Kommo (poco confiable), y por último m4a (el formato más común).
+  if (fallback && WHISPER_EXT_RE.test(fallback)) return fallback;
+  return "audio.m4a";
 }
 
 async function transcribeAudio(
@@ -611,16 +646,24 @@ async function transcribeAudio(
   filename?: string
 ): Promise<string | null> {
   const safeUrl = assertAllowedAudioUrl(url);
-  // redirect:"error" → un 3xx no puede re-dirigir el fetch a una IP interna
-  // después de la validación.
-  const audioRes = await fetch(safeUrl, { redirect: "error" });
+  // Kommo sirve el adjunto desde amojo.kommo.com con un 301 hacia
+  // drive-c.kommo.com. Necesitamos seguir ese redirect:
+  //  - redirect:"error"  → tiraba ante el 301 (ninguna nota de voz se transcribía).
+  //  - redirect:"manual" → en Deno devuelve una respuesta opaca (status 0, sin
+  //    headers), así que NO se puede leer el Location para seguirlo a mano.
+  //  - redirect:"follow" → Deno sigue el 301 solo. Es la única que funciona acá.
+  // Anti-SSRF: la URL inicial ya está en el allowlist y Kommo solo redirige a su
+  // propio storage; revalidamos además el host FINAL (res.url) post-hoc.
+  const audioRes = await fetch(safeUrl, { redirect: "follow" });
   if (!audioRes.ok) throw new Error(`audio download ${audioRes.status}`);
+  // El host FINAL puede ser Kommo o Google Storage (destino legítimo del 301).
+  const finalUrl = assertAllowedAudioUrl(audioRes.url || safeUrl.toString(), AUDIO_REDIRECT_HOST_SUFFIXES);
   const blob = await audioRes.blob();
   if (blob.size === 0) throw new Error("audio vacío");
   if (blob.size > MAX_AUDIO_BYTES) throw new Error(`audio demasiado grande (${blob.size} bytes)`);
 
   const form = new FormData();
-  form.append("file", blob, filename || "audio.ogg");
+  form.append("file", blob, audioFilename(audioRes.headers.get("content-type"), finalUrl, filename));
   form.append("model", "whisper-1");
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -975,11 +1018,18 @@ async function recoverFailedClassifications(
     const classifyModel = runtimeCfg.getOr("CLASSIFY_MODEL", "claude-haiku-4-5");
     const verticals = await getVerticals();
     const verticalsBySlug = new Map(verticals.map((v) => [v.slug, v]));
+    // Para reintentar la transcripción de notas de voz que fallaron de forma
+    // transitoria (redirect, OpenAI caído) en vez de dejarlas en revisión.
+    const openaiKey = runtimeCfg.get("OPENAI_API_KEY");
+    const filters = await getPublishFilters();
     let healed = 0;
 
     for (const msg of rows) {
       const isPlaceholder = /^\[(Imagen|Documento|Audio|Archivo)/.test(msg.content ?? "");
       let mediaForClassify: MediaForClassify | null = null;
+      // Si recuperamos una nota de voz por transcripción, este es el texto que
+      // sigue el flujo normal (clasificación) y reemplaza el placeholder.
+      let recoveredText: string | null = null;
       if (isPlaceholder) {
         if (msg.media_url && (msg.media_kind === "image" || msg.media_kind === "document")) {
           mediaForClassify = {
@@ -987,6 +1037,34 @@ async function recoverFailedClassifications(
             label: msg.media_kind === "image" ? "Imagen" : "Documento",
             source: { type: "url", url: msg.media_url },
           };
+        } else if (msg.media_url && msg.media_kind === "audio") {
+          // Nota de voz: reintentar transcripción. Sin key o toggle apagado →
+          // revisión humana (alguien la escucha).
+          if (!openaiKey || !filters.media.audio) {
+            await supabase
+              .from("messages")
+              .update({ requires_human_review: true, classification: { error: "recover: audio sin transcripción (toggle/key)" } })
+              .eq("id", msg.id);
+            continue;
+          }
+          try {
+            const transcript = await transcribeAudio(openaiKey, msg.media_url, msg.content?.match(/\[Audio ([^\]]+)\]/)?.[1]);
+            if (!transcript) {
+              await supabase
+                .from("messages")
+                .update({ requires_human_review: true, classification: { error: "recover: audio transcripción vacía" } })
+                .eq("id", msg.id);
+              continue;
+            }
+            recoveredText = `🎙️ ${transcript}`;
+          } catch (err) {
+            console.error("recover whisper:", err instanceof Error ? err.message : String(err));
+            await supabase
+              .from("messages")
+              .update({ requires_human_review: true, classification: { error: "recover: audio transcribe failed" } })
+              .eq("id", msg.id);
+            continue;
+          }
         } else {
           // Adjunto irrecuperable (sin URL o tipo no procesable) → que lo vea un humano.
           await supabase
@@ -996,14 +1074,17 @@ async function recoverFailedClassifications(
           continue;
         }
       }
-      const text = isPlaceholder ? "" : (msg.content ?? "");
+      const text = recoveredText ?? (isPlaceholder ? "" : (msg.content ?? ""));
       try {
         // deno-lint-ignore no-explicit-any
         const leadName = (msg as any).leads?.display_name ?? undefined;
         const cls = await classify(text, msg.source ?? "unknown", verticals, anthropic, operator, classifyModel, mediaForClassify, leadName);
         const v = verticalsBySlug.get(cls.vertical_slug);
         const extra: Record<string, unknown> = {};
-        if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
+        if (recoveredText) {
+          // Audio transcripto: el contenido pasa a ser el texto de la nota de voz.
+          extra.content = recoveredText;
+        } else if (mediaForClassify && cls.media_summary && cls.media_summary.trim()) {
           extra.content = `[${mediaForClassify.label}] ${cls.media_summary.trim()}`;
         }
         if (v?.ignore) {
