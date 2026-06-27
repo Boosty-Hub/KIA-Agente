@@ -1165,6 +1165,14 @@ async function runAgent(opts: {
 
   // 3) Loop de eventos
   let responseText = "";
+  // El último agent.message que SÍ contenía los tags <respuesta>. El agente a
+  // veces responde primero (con tags), luego escribe la memoria del lead vía
+  // tool calls, y CIERRA con un agent.message de pura meta-narración sin tags
+  // ("La respuesta está lista en el bloque <respuesta> arriba"). Si solo nos
+  // quedáramos con el último mensaje, perderíamos la respuesta real. Por eso
+  // preferimos el último mensaje con tags y caemos al último a secas solo si
+  // ninguno los tuvo.
+  let taggedText = "";
   let toolCalls = 0;
 
   for await (const event of stream) {
@@ -1176,6 +1184,10 @@ async function runAgent(opts: {
       responseText = "";
       for (const block of ev.content ?? []) {
         if (block.type === "text") responseText += block.text;
+      }
+      // Recordá este mensaje si trae la respuesta real (tags <respuesta>).
+      if (/<respuesta>[\s\S]*?<\/respuesta>/i.test(responseText)) {
+        taggedText = responseText;
       }
     } else if (ev.type === "agent.custom_tool_use") {
       toolCalls++;
@@ -1270,16 +1282,19 @@ async function runAgent(opts: {
   }
 
   // Extraer SOLO lo que está dentro de <respuesta>...</respuesta>.
-  // Si NO hay tags, el output está malformado (el modelo a veces narra sus
-  // acciones — "He respondido a X con…" — en vez de responder). Devolvemos
+  // Preferimos el último mensaje que tuvo tags (taggedText) sobre el último
+  // mensaje a secas: el agente puede responder primero y luego narrar la
+  // escritura de memoria sin tags. Si NINGÚN mensaje tuvo tags, el output está
+  // malformado (el modelo narra sus acciones en vez de responder) y devolvemos
   // hadRespuesta=false para que el caller NO lo auto-publique (va a revisión).
-  const match = responseText.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
+  const source = taggedText || responseText;
+  const match = source.match(/<respuesta>([\s\S]*?)<\/respuesta>/i);
   const hadRespuesta = match != null;
-  const clean = (match ? match[1] : responseText).trim();
+  const clean = (match ? match[1] : source).trim();
 
   return {
     responseText: clean,
-    rawResponseText: responseText.trim(),
+    rawResponseText: source.trim(),
     hadRespuesta,
     toolCalls,
     durationMs: Date.now() - start,
