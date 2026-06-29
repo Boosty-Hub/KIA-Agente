@@ -31,6 +31,7 @@ const kindMeta: Record<string, { label: string; icon: string }> = {
   draft_failed: { label: "Falló una respuesta", icon: "🔴" },
   human_review_needed: { label: "Necesita tu revisión", icon: "🟡" },
   outcomes_regression: { label: "Bajó la calidad", icon: "📉" },
+  salesbot_not_delivered: { label: "No se entregó el mensaje", icon: "📵" },
 };
 
 function kindLabel(kind: string): { label: string; icon: string } {

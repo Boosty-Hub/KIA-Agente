@@ -15,7 +15,12 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { loadConfig } from "../_shared/config.ts";
-import { patchLeadField, runSalesbot } from "../_shared/kommo.ts";
+import {
+  patchLeadField,
+  runSalesbot,
+  fetchOutgoingEventIds,
+  verifyOutgoingDelivery,
+} from "../_shared/kommo.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -87,8 +92,9 @@ async function publishOne(
   },
   config: KommoConfig,
   kommoDomain: string,
-  kommoToken: string
-) {
+  kommoToken: string,
+  verify: { enabled: boolean; timeoutMs: number }
+): Promise<{ delivered: boolean; verified: boolean }> {
   const kommoLeadId = draft.messages?.leads?.kommo_lead_id;
   if (!kommoLeadId) throw new Error("kommo_lead_id missing");
   if (!config.response_custom_field_id) throw new Error("response_custom_field_id no configurado");
@@ -122,8 +128,26 @@ async function publishOne(
 
   // ---- Flujo normal: DM por campo + salesbot estándar ----
   // SIEMPRE corre, independientemente de si la parte pública falló.
+  // Antes de disparar, tomamos una "foto" de los mensajes salientes que el lead YA
+  // tenía, para poder detectar el NUEVO que (si todo va bien) genere el salesbot.
+  const baseline = verify.enabled
+    ? await fetchOutgoingEventIds(leadId, kommoDomain, kommoToken)
+    : new Set<string>();
+
   await patchLeadField(leadId, config.response_custom_field_id, draft.body, kommoDomain, kommoToken);
   await runSalesbot(config.salesbot_id, leadId, kommoDomain, kommoToken);
+
+  // El 202 success:true de salesbot/run NO prueba la entrega (ver _shared/kommo.ts).
+  // Verificamos que haya aparecido un outgoing_chat_message nuevo del lead.
+  if (!verify.enabled) return { delivered: true, verified: false };
+  const delivered = await verifyOutgoingDelivery(
+    leadId,
+    baseline,
+    kommoDomain,
+    kommoToken,
+    verify.timeoutMs
+  );
+  return { delivered, verified: true };
 }
 
 Deno.serve(async (req: Request) => {
@@ -154,6 +178,18 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Verificador de entrega (DB-first / env-fallback). El default es ON: el
+    // salesbot/run devuelve 202 success aunque el bot no entregue, así que sin esto
+    // marcaríamos "enviado" en falso. SALESBOT_VERIFY_ENABLED="false" lo apaga
+    // (vuelve al comportamiento previo); SALESBOT_VERIFY_TIMEOUT_MS ajusta la ventana.
+    const verify = {
+      enabled: runtimeCfg.getOr("SALESBOT_VERIFY_ENABLED", "true") !== "false",
+      timeoutMs: Math.max(
+        3000,
+        Number(runtimeCfg.getOr("SALESBOT_VERIFY_TIMEOUT_MS", "12000")) || 12000
+      ),
+    };
+
     const pending = await pickPending(config.publish_from);
     if (pending.length === 0) {
       return new Response(JSON.stringify({ ok: true, published: 0 }), {
@@ -162,50 +198,112 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    let published = 0;
-    let failed = 0;
-    const errors: Array<{ draft_id: string; error: string }> = [];
+    // El trabajo de publicación es LENTO (verificación de entrega: hasta
+    // verify.timeoutMs por cada draft NO entregado) y este endpoint se dispara
+    // fire-and-forget (cron pg_net con timeout 30s, y /api/drafts/[id]/approve sin
+    // await). Si corriéramos el loop antes de responder, el runtime mataría la función
+    // al desconectarse el cliente (invariante #2). Por eso va en waitUntil y
+    // respondemos 202 de inmediato.
+    const processBatch = async () => {
+      let published = 0;
+      let undelivered = 0;
+      let failed = 0;
 
-    for (const d of pending) {
-      try {
-        await publishOne(d, config, kommoDomain, kommoToken);
-        await supabase
-          .from("drafts")
-          .update({ status: "auto_sent", sent_at: new Date().toISOString() })
-          .eq("id", d.id);
-        published++;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await supabase
-          .from("drafts")
-          .update({
-            status: "failed",
-            agent_metadata: { publish_error: msg },
-          })
-          .eq("id", d.id);
-        errors.push({ draft_id: d.id, error: msg });
-        failed++;
+      for (const d of pending) {
+        const baseMeta = (d.agent_metadata as Record<string, unknown> | null) ?? {};
+        try {
+          const result = await publishOne(d, config, kommoDomain, kommoToken, verify);
+
+          if (result.delivered) {
+            await supabase
+              .from("drafts")
+              .update({
+                status: "auto_sent",
+                sent_at: new Date().toISOString(),
+                agent_metadata: result.verified
+                  ? { ...baseMeta, delivery_verified: true }
+                  : baseMeta,
+              })
+              .eq("id", d.id);
+            published++;
+          } else {
+            // El bot se disparó (Kommo respondió OK) pero NO apareció un mensaje
+            // saliente en la ventana: el mensaje NO llegó al canal. No es un "enviado".
+            await supabase
+              .from("drafts")
+              .update({
+                status: "failed",
+                agent_metadata: {
+                  ...baseMeta,
+                  delivery_unverified: true,
+                  publish_error:
+                    "salesbot disparado pero sin entrega confirmada (no apareció outgoing_chat_message)",
+                },
+              })
+              .eq("id", d.id);
+
+            const leadName =
+              d.messages?.leads?.display_name ??
+              `lead ${d.messages?.leads?.kommo_lead_id ?? "?"}`;
+            const { error: alertErr } = await supabase.from("alerts").insert({
+              kind: "salesbot_not_delivered",
+              severity: "warning",
+              title: `No se confirmó la entrega del mensaje a ${leadName}`,
+              description:
+                "El salesbot se disparó y Kommo respondió OK, pero no apareció un mensaje saliente en el canal dentro de la ventana de verificación. " +
+                "Causas probables: ventana de mensajería de Instagram (24h) vencida, lead venido de un comentario sin DM abierto, o el bot con una condición que lo corta. " +
+                "Revisá la conversación y, si corresponde, respondé manualmente.",
+              ref_table: "drafts",
+              ref_id: d.id,
+              metadata: {
+                kommo_lead_id: d.messages?.leads?.kommo_lead_id ?? null,
+                lead_id: d.messages?.lead_id ?? null,
+              },
+            });
+            if (alertErr) console.warn("alert salesbot_not_delivered:", alertErr.message);
+            undelivered++;
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await supabase
+            .from("drafts")
+            .update({
+              status: "failed",
+              agent_metadata: { ...baseMeta, publish_error: msg },
+            })
+            .eq("id", d.id);
+          console.warn(`publish-to-kommo: draft ${d.id} falló:`, msg);
+          failed++;
+        }
       }
+
+      // Tras publicar al menos un mensaje ENTREGADO, disparar evaluación de outcomes.
+      if (published > 0) {
+        await fetch(`${SUPABASE_URL}/functions/v1/evaluate-outcomes`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        }).catch((e) => console.warn("trigger evaluate-outcomes:", e));
+      }
+
+      console.log(
+        `publish-to-kommo: published=${published} undelivered=${undelivered} failed=${failed}`
+      );
+    };
+
+    // @ts-ignore EdgeRuntime de Supabase
+    if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
+      // @ts-ignore
+      EdgeRuntime.waitUntil(processBatch());
+    } else {
+      // Runtime sin waitUntil (p.ej. test local): correr inline.
+      await processBatch();
     }
 
-    // Después de publicar, disparar evaluación de outcomes (fire-and-forget)
-    if (published > 0) {
-      const promise = fetch(`${SUPABASE_URL}/functions/v1/evaluate-outcomes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch((e) => console.warn("trigger evaluate-outcomes:", e));
-      // @ts-ignore EdgeRuntime de Supabase
-      if (typeof EdgeRuntime !== "undefined" && EdgeRuntime.waitUntil) {
-        // @ts-ignore
-        EdgeRuntime.waitUntil(promise);
-      }
-    }
-
-    return new Response(
-      JSON.stringify({ ok: true, published, failed, errors }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ ok: true, accepted: pending.length }), {
+      status: 202,
+      headers: { "content-type": "application/json" },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("publish-to-kommo error:", msg);
