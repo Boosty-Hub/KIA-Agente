@@ -44,6 +44,12 @@ import {
   businessHoursLabel,
   type BusinessHoursConfig,
 } from "../_shared/business-hours.ts";
+import { fetchRecentHistory, formatHistory } from "../_shared/history.ts";
+
+// Cuántos turnos previos de la conversación se inyectan al agente como
+// historial_reciente (para que SIEMPRE responda anclado a la conversación real:
+// lo ya dicho al lead, el seguimiento, sus mensajes previos). Moderado.
+const AGENT_HISTORY_TURNS = 15;
 
 // SUPABASE_URL and SERVICE_ROLE are injected by the Supabase runtime and
 // always come from env — they are infrastructure constants, not per-client
@@ -1113,16 +1119,25 @@ function buildContext(opts: {
   activeSituations: string | null;
   vehicleCatalog: string | null;
   knownData: string | null;
+  recentHistory?: string | null;
   commentInstructions?: string | null;
 }) {
   const cls = opts.classification ?? {};
   const multi = opts.messages.length > 1;
+  // Hora local del operador (misma zona que historial_reciente) — NO UTC, para que
+  // el agente no perciba un salto horario falso entre este bloque y el historial.
+  const hhmm = (iso: string): string => {
+    try {
+      return new Intl.DateTimeFormat("es", {
+        timeZone: opts.timezone, hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date(iso));
+    } catch {
+      return new Date(iso).toISOString().slice(11, 16);
+    }
+  };
   const block = multi
     ? opts.messages
-        .map(
-          (m, i) =>
-            `(${i + 1}) [${new Date(m.created_at).toISOString().slice(11, 16)}] ${m.content}`
-        )
+        .map((m, i) => `(${i + 1}) [${hhmm(m.created_at)}] ${m.content}`)
         .join("\n")
     : opts.messages[0]?.content ?? "";
 
@@ -1146,8 +1161,13 @@ urgency: ${cls.urgency ?? "?"}
 toxicity: ${cls.toxicity ?? "?"}
 confidence: ${cls.confidence ?? "?"}
 classifier_reasoning: ${cls.reasoning ?? "?"}
-
-${header}
+${opts.recentHistory ? `
+historial_reciente (la conversación real hasta ahora, del más viejo al más nuevo — incluye lo que YA se le dijo al lead por el seguimiento/asesor y tus respuestas previas; "asesora" sos vos/el negocio, "lead" es el cliente). USALO SIEMPRE para responder con contexto: no repitas lo ya dicho, no te contradigas, retomá el hilo y respondé a lo último que el lead realmente pregunta o responde:
+"""
+${opts.recentHistory}
+"""
+` : ""}
+${header} (esto es lo NUEVO que tenés que responder ahora)
 """
 ${block}
 """
@@ -1607,6 +1627,17 @@ Deno.serve(async (req: Request) => {
           : "El mensaje vino de un comentario público en una publicación de Instagram. Tu respuesta sale por DM: reconocé el origen con naturalidad (ej: \"vi tu comentario 😊\"), andá directo al grano.";
       }
 
+      // Historial reciente real (lead + respuestas enviadas + outbound capturado),
+      // excluyendo el batch actual (que va aparte como "lo nuevo a responder").
+      // Fail-open: si falla, el agente sigue con el batch + su memoria conversation.md.
+      const recentHistory = formatHistory(
+        await fetchRecentHistory(supabase, batch.leadId, {
+          limit: AGENT_HISTORY_TURNS,
+          excludeMessageIds: batchIds,
+        }),
+        timezone
+      );
+
       const contextMessage = buildContext({
         lead,
         messages: batchMsgs.map((m) => ({
@@ -1629,6 +1660,7 @@ Deno.serve(async (req: Request) => {
         activeSituations: promoCtx.activeSituations,
         vehicleCatalog,
         knownData,
+        recentHistory,
         commentInstructions,
       });
 

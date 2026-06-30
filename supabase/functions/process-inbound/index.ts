@@ -12,6 +12,12 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "npm:@anthropic-ai/sdk@0.95.1";
 import { loadConfig } from "../_shared/config.ts";
 import { recordUsage } from "../_shared/usage.ts";
+import { fetchRecentHistory, formatHistory } from "../_shared/history.ts";
+
+// Cuántos turnos previos de la conversación se le pasan al clasificador como
+// contexto (para que clasifique el mensaje actual SIN aislarlo: ej. un "No" que
+// responde a "¿coordinamos tu visita?"). Moderado para no inflar el costo Haiku.
+const CLASSIFY_HISTORY_TURNS = 6;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -21,6 +27,22 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
 });
 
 const MAX_BATCH = 20;
+
+// Zona horaria del operador (para formatear las horas del historial que ve el
+// clasificador). Vive en follow_up_config; cache 60s para no consultarla por
+// mensaje. Fallback America/Caracas (operador KIA).
+let tzCache: { tz: string; loadedAt: number } | null = null;
+async function getOperatorTz(): Promise<string> {
+  if (tzCache && Date.now() - tzCache.loadedAt < 60_000) return tzCache.tz;
+  const { data } = await supabase
+    .from("follow_up_config")
+    .select("timezone")
+    .eq("is_active", true)
+    .maybeSingle();
+  const tz = (data?.timezone as string) || "America/Caracas";
+  tzCache = { tz, loadedAt: Date.now() };
+  return tz;
+}
 
 // ---- Tipos del payload de Kommo ----
 type KommoLead = {
@@ -452,7 +474,8 @@ async function classify(
   operator: string,
   model: string,
   media?: MediaForClassify | null,
-  leadName?: string
+  leadName?: string,
+  recentHistory?: string
 ): Promise<Classification & { media_summary?: string; __usage?: Anthropic.Usage }> {
   const verticalList = verticals
     .map((v) => `  - ${v.slug}: ${v.description ?? "(sin descripción)"}`)
@@ -460,6 +483,8 @@ async function classify(
   const system = `Eres un clasificador de mensajes entrantes para ${operator}.
 
 Recibes mensajes desde Instagram DM, comentarios de Instagram, WhatsApp y formularios web. Pueden incluir un adjunto (imagen o documento). Tu único trabajo es asignar exactamente una vertical, dar señales numéricas y, si hay adjunto, describirlo.
+
+Si recibís un bloque "Conversación reciente", usalo SOLO como contexto para entender el mensaje (de qué se viene hablando, a qué responde el lead). Clasificá ÚNICAMENTE el "[MENSAJE A CLASIFICAR]" (el último del lead): p. ej. un "no"/"sí" suelto se interpreta según lo último que se le preguntó al lead en ese contexto.
 
 Verticales disponibles:
 ${verticalList}
@@ -477,6 +502,12 @@ Reglas:
 - inferred_gender: inferí el género probable de la persona SOLO a partir de su NOMBRE${leadName ? ` (el nombre del lead es: "${leadName}")` : " (no hay nombre disponible en este caso)"}. Devolvé "masculino" o "femenino" únicamente si el nombre lo indica con claridad; si es unisex, ambiguo, un nombre de empresa, un nombre extranjero poco común, o no hay nombre → "desconocido". NUNCA lo deduzcas del contenido del mensaje, solo del nombre.
 - mentioned_age: si el lead MENCIONA EXPLÍCITAMENTE su edad en el mensaje (ej: "tengo 62 años", "soy una señora de la tercera edad" → estimá, "ya estoy jubilado" → 0 si no hay número), devolvé el número de años. Si no menciona edad, devolvé 0. No inventes ni estimes a partir del estilo de escritura.`;
 
+  // Bloque de contexto: la conversación reciente (si hay), para no clasificar el
+  // mensaje aislado. El modelo igual clasifica SOLO el [MENSAJE A CLASIFICAR].
+  const ctxBlock = recentHistory && recentHistory.trim()
+    ? `Conversación reciente (contexto, del más viejo al más nuevo):\n"""\n${recentHistory.trim()}\n"""\n\n`
+    : "";
+
   // Contenido del turno: texto, o bloque de media + texto cuando hay adjunto.
   // deno-lint-ignore no-explicit-any
   let userContent: any;
@@ -487,13 +518,13 @@ Reglas:
     else blocks.push({ type: "document", source: media.source });
     blocks.push({
       type: "text",
-      text: `Canal: ${channel}\n\nEl lead envió un adjunto (${media.label}).${
-        text ? ` Texto del lead:\n"""${text}"""` : " (sin texto, ver el adjunto)"
+      text: `Canal: ${channel}\n\n${ctxBlock}El lead envió un adjunto (${media.label}).${
+        text ? ` [MENSAJE A CLASIFICAR]:\n"""${text}"""` : " (sin texto, ver el adjunto)"
       }`,
     });
     userContent = blocks;
   } else {
-    userContent = `Canal: ${channel}\n\nMensaje:\n"""${text}"""`;
+    userContent = `Canal: ${channel}\n\n${ctxBlock}[MENSAJE A CLASIFICAR]:\n"""${text}"""`;
   }
 
   const response = await anthropic.messages.create({
@@ -903,7 +934,11 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 
       try {
         const leadName = isInbound ? (m.author?.name ?? undefined) : undefined;
-        const cls = await classify(text, channel, verticals, anthropic, operator, classifyModel, mediaForClassify, leadName);
+        const recentHistory = formatHistory(
+          await fetchRecentHistory(supabase, leadId, { limit: CLASSIFY_HISTORY_TURNS, excludeMessageIds: [msg.id] }),
+          await getOperatorTz()
+        );
+        const cls = await classify(text, channel, verticals, anthropic, operator, classifyModel, mediaForClassify, leadName, recentHistory);
         const v = verticalsBySlug.get(cls.vertical_slug);
         // Género (del nombre) + edad (si la mencionó) → al lead para el contexto.
         await storeLeadDemographics(leadId, cls);
@@ -1078,7 +1113,11 @@ async function recoverFailedClassifications(
       try {
         // deno-lint-ignore no-explicit-any
         const leadName = (msg as any).leads?.display_name ?? undefined;
-        const cls = await classify(text, msg.source ?? "unknown", verticals, anthropic, operator, classifyModel, mediaForClassify, leadName);
+        const recentHistory = formatHistory(
+          await fetchRecentHistory(supabase, msg.lead_id, { limit: CLASSIFY_HISTORY_TURNS, excludeMessageIds: [msg.id] }),
+          await getOperatorTz()
+        );
+        const cls = await classify(text, msg.source ?? "unknown", verticals, anthropic, operator, classifyModel, mediaForClassify, leadName, recentHistory);
         const v = verticalsBySlug.get(cls.vertical_slug);
         const extra: Record<string, unknown> = {};
         if (recoveredText) {
