@@ -23,6 +23,7 @@ import {
   patchEntityFieldEnum,
   patchContactCodeField,
   fetchKnownLeadData,
+  KOMMO_LOST_STATUS,
   type KommoStageLite,
   type KommoFieldLite,
   type KnownLeadData,
@@ -277,6 +278,26 @@ const CRM_TOOL_NAMES = new Set([
   "transferir_asesor",
   "etiquetar_lead",
 ]);
+// Sinónimos de la etapa terminal "Perdido". En Kommo el status de perdido es
+// UNIVERSAL (143) y existe en TODOS los pipelines con el mismo nombre, así que
+// resolver "Perdidos" por nombre encontraría varias coincidencias y abortaría
+// por ambigüedad. Además el nombre exacto varía por cuenta ("Perdidos",
+// "Cerrado y sin realizar"…). Por eso lo resolvemos por INTENCIÓN → status 143,
+// manteniendo el lead en su pipeline actual (ver mover_etapa). norm() ya baja a
+// minúsculas y saca acentos, así que comparamos contra formas normalizadas.
+const LOST_STAGE_SYNONYMS = new Set([
+  "perdido",
+  "perdidos",
+  "lost",
+  "closed lost",
+  "closed - lost",
+  "cerrado y sin realizar",
+  "cerrado sin realizar",
+  "cerrado sin exito",
+  "cerrado perdido",
+  "cerrado y perdido",
+  "cierre perdido",
+]);
 const CRM_TTL_MS = 60_000;
 let stagesCache: { items: KommoStageLite[]; loadedAt: number } | null = null;
 let leadFieldsCache: { items: KommoFieldLite[]; loadedAt: number } | null = null;
@@ -323,6 +344,50 @@ async function runCrmTool(
     if (ctx.kommoLeadId == null) return "No tengo el id de Kommo de este lead; no puedo mover la etapa.";
     const stageName = String(input.stage_name ?? "").trim();
     if (!stageName) return "ERROR_VALIDACION: falta 'stage_name'.";
+
+    // "Perdido": cerrar el lead sin éxito. Resuelto por INTENCIÓN al status nativo
+    // de Kommo (143), no por nombre — 143 existe en todos los pipelines (la
+    // resolución por nombre abortaría por ambigüedad) y su nombre exacto varía por
+    // cuenta. Sin pipeline_id → Kommo lo deja en su pipeline actual marcado como
+    // perdido. Es terminal: follow-up-scan ya trata 142/143 como corte de secuencia.
+    if (LOST_STAGE_SYNONYMS.has(norm(stageName))) {
+      // Idempotencia: si el lead ya está en Perdido, no re-PATCH ni ensuciamos el
+      // historial con un evento 143→143.
+      if (ctx.currentKommoStageId === KOMMO_LOST_STATUS) {
+        return "El lead ya está marcado como Perdido en Kommo; no hace falta moverlo de nuevo.";
+      }
+      await moveLeadStage(ctx.kommoLeadId, KOMMO_LOST_STATUS, null, ctx.domain, ctx.token);
+      // Registrar evento + sincronizar cache local (fail-open: nunca romper el tool).
+      if (ctx.internalLeadId) {
+        try {
+          // Nombre de la etapa de origen (solo display en la línea de tiempo del
+          // inbox; el id de origen sí queda registrado aunque esto falle).
+          let fromStageName: string | null = null;
+          if (ctx.currentKommoStageId != null) {
+            const stages = await getStages(ctx.domain, ctx.token);
+            fromStageName = stages.find((s) => s.id === ctx.currentKommoStageId)?.name ?? null;
+          }
+          await supabase.from("lead_stage_events").insert({
+            lead_id: ctx.internalLeadId,
+            from_stage_id: ctx.currentKommoStageId ?? null,
+            to_stage_id: KOMMO_LOST_STATUS,
+            from_stage_name: fromStageName,
+            to_stage_name: "Perdido",
+            pipeline_name: null,
+            moved_by: "agente",
+            draft_id: ctx.draftId ?? null,
+          });
+          await supabase
+            .from("leads")
+            .update({ kommo_stage_id: KOMMO_LOST_STATUS })
+            .eq("id", ctx.internalLeadId);
+        } catch (evErr) {
+          console.warn("lead_stage_events insert (agente perdido) — fail-open:", evErr instanceof Error ? evErr.message : String(evErr));
+        }
+      }
+      return "Listo: marqué el lead como Perdido (cerrado sin éxito) en Kommo.";
+    }
+
     const pipelineName = String(input.pipeline_name ?? "").trim();
     const stages = await getStages(ctx.domain, ctx.token);
     let matches = stages.filter((s) => norm(s.name) === norm(stageName));
