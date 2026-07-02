@@ -500,6 +500,25 @@ export async function patchEntityFieldEnum(
 }
 
 /**
+ * Normaliza un teléfono venezolano a formato internacional pegado (+58…):
+ * quita espacios/guiones/paréntesis, saca el 0 inicial local y antepone +58.
+ * Ej: "0414 8182674" → "+584148182674" · "58 414-8182674" → "+584148182674".
+ * Números ya internacionales (+…) se conservan (solo se limpia el 0 tras +58);
+ * formatos no reconocidos (otro país sin +, texto) se devuelven limpios tal cual.
+ */
+export function normalizePhoneVE(raw: string): string {
+  const cleaned = raw.replace(/[\s\-().]/g, "");
+  if (!cleaned) return raw.trim();
+  if (cleaned.startsWith("+")) return "+" + cleaned.slice(1).replace(/^580/, "58");
+  const digits = cleaned.replace(/\D/g, "");
+  if (digits !== cleaned) return cleaned; // contiene letras u otros símbolos: no tocar
+  if (/^0\d{10}$/.test(digits)) return "+58" + digits.slice(1); // 04148182674
+  if (/^58\d{10}$/.test(digits)) return "+" + digits; // 584148182674
+  if (/^4\d{9}$/.test(digits)) return "+58" + digits; // 4148182674
+  return cleaned;
+}
+
+/**
  * Setea un campo de SISTEMA del contacto (teléfono/email) por field_code. Estos
  * campos usan un shape distinto: { field_code, values:[{ value, enum_code }] }.
  * enumCode típico: "WORK". Throws si !OK.

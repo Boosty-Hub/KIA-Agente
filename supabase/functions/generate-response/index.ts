@@ -22,6 +22,7 @@ import {
   addLeadTags,
   patchEntityFieldEnum,
   patchContactCodeField,
+  normalizePhoneVE,
   fetchKnownLeadData,
   KOMMO_LOST_STATUS,
   type KommoStageLite,
@@ -466,8 +467,10 @@ async function runCrmTool(
       await patchEntityFieldEnum("leads", ctx.kommoLeadId, f.id, enumIds, ctx.domain, ctx.token);
       return `Listo: actualicé "${f.name}" del lead a ${matched.map((e) => `"${e.value}"`).join(", ")}.`;
     }
-    await patchLeadField(ctx.kommoLeadId, f.id, value, ctx.domain, ctx.token);
-    return `Listo: actualicé el campo "${f.name}" del lead a "${value}".`;
+    // Campos custom de teléfono también se normalizan a +58 pegado.
+    const leadVal = norm(f.name).includes("telefono") ? normalizePhoneVE(value) : value;
+    await patchLeadField(ctx.kommoLeadId, f.id, leadVal, ctx.domain, ctx.token);
+    return `Listo: actualicé el campo "${f.name}" del lead a "${leadVal}".`;
   }
 
   if (name === "actualizar_contacto") {
@@ -483,9 +486,11 @@ async function runCrmTool(
       return `No existe un campo de contacto llamado "${fieldName}". Campos disponibles: ${opciones || "(ninguno)"}.`;
     }
     // Teléfono/email del contacto: campos de sistema con shape distinto (field_code + enum_code).
+    // Los teléfonos se normalizan SIEMPRE a formato internacional pegado (+58…).
     if (f.code === "PHONE" || f.code === "EMAIL") {
-      await patchContactCodeField(ctx.kommoContactId, f.code, value, "WORK", ctx.domain, ctx.token);
-      return `Listo: actualicé el ${f.code === "PHONE" ? "teléfono" : "email"} del contacto a "${value}".`;
+      const v = f.code === "PHONE" ? normalizePhoneVE(value) : value;
+      await patchContactCodeField(ctx.kommoContactId, f.code, v, "WORK", ctx.domain, ctx.token);
+      return `Listo: actualicé el ${f.code === "PHONE" ? "teléfono" : "email"} del contacto a "${v}".`;
     }
     if (f.type === "select" || f.type === "multiselect") {
       const wanted = value.split(/[,;]+/).map((v) => v.trim()).filter(Boolean);
@@ -498,8 +503,10 @@ async function runCrmTool(
       await patchEntityFieldEnum("contacts", ctx.kommoContactId, f.id, enumIds, ctx.domain, ctx.token);
       return `Listo: actualicé "${f.name}" del contacto a ${matched.map((e) => `"${e.value}"`).join(", ")}.`;
     }
-    await patchContactField(ctx.kommoContactId, f.id, value, ctx.domain, ctx.token);
-    return `Listo: actualicé el campo "${f.name}" del contacto a "${value}".`;
+    // Campos custom de teléfono también se normalizan a +58 pegado.
+    const contactVal = norm(f.name).includes("telefono") ? normalizePhoneVE(value) : value;
+    await patchContactField(ctx.kommoContactId, f.id, contactVal, ctx.domain, ctx.token);
+    return `Listo: actualicé el campo "${f.name}" del contacto a "${contactVal}".`;
   }
 
   if (name === "agregar_nota") {
