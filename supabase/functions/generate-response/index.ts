@@ -24,6 +24,7 @@ import {
   patchContactCodeField,
   normalizePhoneVE,
   fetchKnownLeadData,
+  fetchLeadStage,
   KOMMO_LOST_STATUS,
   type KommoStageLite,
   type KommoFieldLite,
@@ -829,7 +830,8 @@ async function pickLeadBatch(
   throttle?: Throttle,
   ignoredStageIds?: number[],
   debounceMs: number = DEBOUNCE_MS,
-  maxAgeHours = 0
+  maxAgeHours = 0,
+  kommoGate?: { domain: string; token: string } | null
 ): Promise<Batch | null> {
   // --- Camino revisión humana: responder ESE mensaje + pendientes del lead ---
   // Es un override humano explícito (botón de revisión): si alguien pide
@@ -951,15 +953,42 @@ async function pickLeadBatch(
     const lastTs = lastIn ? new Date(lastIn.created_at as string).getTime() : 0;
     if (now - lastTs < debounceMs) continue;
     // Etapa ignorada: si el lead está en una etapa silenciada de Kommo, el
-    // agente no atiende. Stage null = atiende (igual que el gate de follow-up).
+    // agente no atiende. El cache local (leads.kommo_stage_id) puede estar
+    // viejo o NULL (lead movido por un humano/salesbot sin que el webhook lo
+    // refleje) → verificamos la etapa EN VIVO contra Kommo (autoritativa),
+    // igual que follow-up-scan. Fail-open: si la API falla, usamos el cache.
     if (ignoredStageIds && ignoredStageIds.length > 0) {
       const { data: ld } = await supabase
         .from("leads")
-        .select("kommo_stage_id")
+        .select("kommo_stage_id, kommo_lead_id")
         .eq("id", leadId)
         .maybeSingle();
-      const stage = ld?.kommo_stage_id;
-      if (stage != null && ignoredStageIds.includes(Number(stage))) continue;
+      let stage = ld?.kommo_stage_id != null ? Number(ld.kommo_stage_id) : null;
+      if (kommoGate && ld?.kommo_lead_id != null) {
+        try {
+          const live = await fetchLeadStage(Number(ld.kommo_lead_id), kommoGate.domain, kommoGate.token);
+          if (Number.isFinite(live.statusId)) {
+            if (live.statusId !== stage) {
+              await supabase
+                .from("leads")
+                .update({ kommo_stage_id: live.statusId })
+                .eq("id", leadId);
+            }
+            stage = live.statusId;
+          }
+        } catch (_e) {
+          // fail-open: sin verificación en vivo, decide el cache local
+        }
+      }
+      if (stage != null && ignoredStageIds.includes(stage)) {
+        // Marcar el batch como ignorado (mismo criterio que process-inbound):
+        // si no, estos mensajes se re-verificarían contra Kommo en cada barrido.
+        await supabase
+          .from("messages")
+          .update({ ignored: true, ignored_reason: `stage:${stage}` })
+          .in("id", msgs.map((m) => m.id));
+        continue;
+      }
     }
     // Cooldown / tope por lead: si este lead está silenciado, lo SALTAMOS y
     // seguimos con el próximo (no cortamos la cola — eso mataría de hambre a los
@@ -1499,7 +1528,19 @@ Deno.serve(async (req: Request) => {
     checkout: cfg?.shopify_can_checkout === true,
   };
 
-  const batch = await pickLeadBatch(body.message_id, bypass, throttle, ignoredStageIds, debounceMs, maxAgeHours);
+  // Credenciales Kommo para el gate de etapas con verificación EN VIVO
+  // (fail-open: sin credenciales el gate decide con el cache local).
+  let kommoGate: { domain: string; token: string } | null = null;
+  try {
+    const rc = await loadConfig(supabase);
+    const kd = rc.get("KOMMO_API_DOMAIN");
+    const kt = rc.get("KOMMO_ACCESS_TOKEN");
+    if (kd && kt) kommoGate = { domain: kd, token: kt };
+  } catch (_e) {
+    // fail-open
+  }
+
+  const batch = await pickLeadBatch(body.message_id, bypass, throttle, ignoredStageIds, debounceMs, maxAgeHours, kommoGate);
   if (!batch) {
     return new Response(JSON.stringify({ ok: true, picked: null }), {
       status: 200,
