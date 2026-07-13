@@ -13,7 +13,21 @@ function CallbackInner() {
     const supabase = createSupabaseBrowserClient();
     const next = searchParams.get("next") ?? "/inbox";
 
+    async function proceedIfAlreadyAuthed(): Promise<boolean> {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        router.replace(next);
+        router.refresh();
+        return true;
+      }
+      return false;
+    }
+
     async function handleAuth() {
+      if (await proceedIfAlreadyAuthed()) return;
+
       if (typeof window !== "undefined" && window.location.hash.includes("access_token")) {
         const hash = new URLSearchParams(window.location.hash.slice(1));
         const access_token = hash.get("access_token");
@@ -21,6 +35,7 @@ function CallbackInner() {
         if (access_token && refresh_token) {
           const { error } = await supabase.auth.setSession({ access_token, refresh_token });
           if (error) {
+            if (await proceedIfAlreadyAuthed()) return;
             setError(error.message);
             return;
           }

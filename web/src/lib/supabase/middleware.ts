@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { roleFromUser, isAdminOnlyPath } from "@/lib/auth/roles";
+import { EMBED_COOKIE_OPTIONS } from "./cookie-options";
 
 export async function updateSession(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -31,7 +32,13 @@ export async function updateSession(request: NextRequest) {
   // Both env vars are confirmed defined — build the client with locals (no !)
   let supabaseResponse = NextResponse.next({ request });
 
+  // Embed context (computed early so the refreshed session cookies get CHIPS
+  // attrs and survive the Hub's cross-site iframe — see cookie-options).
+  const requestedMode = request.nextUrl.searchParams.get("mode");
+  const embedActive = requestedMode === "embed" || request.cookies.get("embed_mode")?.value === "1";
+
   const supabase = createServerClient(url, anon, {
+    ...(embedActive ? { cookieOptions: EMBED_COOKIE_OPTIONS } : {}),
     cookies: {
       getAll() {
         return request.cookies.getAll();
@@ -87,6 +94,26 @@ export async function updateSession(request: NextRequest) {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/inbox";
     return NextResponse.redirect(redirectUrl);
+  }
+
+  // ── Modo embed (Boosty Hub workspace) ─────────────────────────────────────
+  // ?mode=embed activa la persistencia embebida; ?mode=normal la desactiva. La
+  // cookie embed_mode lleva atributos CHIPS para sobrevivir el iframe cross-site.
+  if (requestedMode === "embed") {
+    supabaseResponse.cookies.set("embed_mode", "1", {
+      path: "/",
+      httpOnly: true,
+      ...EMBED_COOKIE_OPTIONS,
+    });
+  } else if (requestedMode === "normal") {
+    supabaseResponse.cookies.delete("embed_mode");
+  }
+
+  // Solo en modo embed abrimos el CSP para permitir el iframe del Hub; el default
+  // seguro (frame-ancestors 'self') lo pone next.config.
+  if (embedActive) {
+    const origins = (process.env.EMBED_ORIGINS || "*").replace(/[\r\n]/g, "");
+    supabaseResponse.headers.set("Content-Security-Policy", `frame-ancestors ${origins}`);
   }
 
   return supabaseResponse;

@@ -1,12 +1,15 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { EMBED_COOKIE_OPTIONS } from "./cookie-options";
 
 export function createSupabaseServerClient() {
   const cookieStore = cookies();
+  const embed = cookieStore.get("embed_mode")?.value === "1";
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      ...(embed ? { cookieOptions: EMBED_COOKIE_OPTIONS } : {}),
       cookies: {
         getAll() {
           return cookieStore.getAll();
