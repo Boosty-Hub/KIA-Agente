@@ -34,7 +34,7 @@ export default async function AgentPage({
     supabase
       .from("kommo_publish_config")
       .select(
-        "publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, crm_can_add_note, crm_can_handoff, crm_can_tag, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids"
+        "publishing_enabled, response_cooldown_seconds, max_responses_per_lead, cooldown_window_hours, ignored_channels, ignored_stage_ids, response_debounce_seconds, answer_max_age_hours, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, agent_off_field_name, crm_actions_enabled, crm_can_move_stage, crm_can_update_lead, crm_can_update_contact, crm_can_add_note, crm_can_handoff, crm_can_tag, shopify_actions_enabled, shopify_can_search, shopify_can_orders, shopify_can_checkout, bcv_rate_enabled, respond_to_comments, comment_reply_enabled, comment_salesbot_id, comment_field_id, comment_reply_rules, comment_instructions, comment_source_ids"
       )
       .eq("is_active", true)
       .maybeSingle(),
@@ -101,6 +101,7 @@ export default async function AgentPage({
   const bcvHasCustomSource = Boolean(cfg.BCV_RATE_URL);
   const businessHours = fuRes.data ?? null;
   const comments: CommentsConfig = {
+    respond_to_comments: pubRes.data?.respond_to_comments === true,
     comment_reply_enabled: pubRes.data?.comment_reply_enabled === true,
     comment_salesbot_id: (pubRes.data?.comment_salesbot_id as number | null) ?? null,
     comment_field_id: (pubRes.data?.comment_field_id as number | null) ?? null,

@@ -198,6 +198,7 @@ type PublishFilters = {
   media: MediaFlags;
   agentOffFieldId: number | null;
   commentSourceIds: Set<number>;
+  respondToComments: boolean;
 };
 let publishFiltersCache: (PublishFilters & { loadedAt: number }) | null = null;
 
@@ -209,7 +210,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
   const { data, error } = await supabase
     .from("kommo_publish_config")
     .select(
-      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids"
+      "ignored_channels, ignored_stage_ids, respond_to_images, respond_to_documents, respond_to_audio, agent_off_field_id, comment_source_ids, respond_to_comments"
     )
     .eq("is_active", true)
     .maybeSingle();
@@ -221,6 +222,7 @@ async function getPublishFilters(): Promise<PublishFilters> {
       media: empty,
       agentOffFieldId: null,
       commentSourceIds: new Set(),
+      respondToComments: false,
       loadedAt: Date.now(),
     };
     return publishFiltersCache;
@@ -241,7 +243,9 @@ async function getPublishFilters(): Promise<PublishFilters> {
   const commentSourceIds = new Set<number>(
     Array.isArray(rawSrcIds) ? rawSrcIds.map(Number).filter((n: number) => Number.isFinite(n)) : []
   );
-  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, loadedAt: Date.now() };
+  // Gate maestro de comentarios (0048): default/columna ausente = OFF.
+  const respondToComments = data?.respond_to_comments === true;
+  publishFiltersCache = { channels, stages, media, agentOffFieldId, commentSourceIds, respondToComments, loadedAt: Date.now() };
   return publishFiltersCache;
 }
 
@@ -840,6 +844,17 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
         if (Number.isFinite(talkId) && kommoDomain && kommoToken) {
           const sourceId = await getTalkSourceId(talkId, kommoDomain, kommoToken);
           if (sourceId !== null && filters.commentSourceIds.has(sourceId)) {
+            // Gate maestro de comentarios (respond_to_comments, 0048): apagado
+            // → ignored ANTES de clasificar (cero tokens). OJO: comment_reply_enabled
+            // solo gatea la respuesta PÚBLICA; sin este gate, la respuesta por DM
+            // corría SIEMPRE (gap que quemaba una sesión CMA por comentario).
+            if (!filters.respondToComments) {
+              await supabase
+                .from("messages")
+                .update({ is_comment: true, ignored: true, ignored_reason: "comments_off" })
+                .eq("id", msg.id);
+              continue;
+            }
             await supabase.from("messages").update({ is_comment: true }).eq("id", msg.id);
           }
         }
