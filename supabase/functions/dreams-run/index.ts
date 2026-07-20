@@ -390,9 +390,14 @@ Reglas del digest:
   // Cota de activos: el exceso MÁS VIEJO se archiva DESPUÉS de que su esencia
   // entró al digest rodante. Fail-open por archivo (un fallo no rompe el run).
   const maxActive = Math.max(10, parseInt(cfg.getOr("DREAMS_MAX_ACTIVE", "60"), 10) || 60);
+  // Cota por corrida: archivar es 2 llamadas HTTP por archivo — un backlog
+  // grande en una sola invocación excede los recursos del worker
+  // (WORKER_RESOURCE_LIMIT). Las corridas sucesivas (cron diario + triggers
+  // del dashboard) drenan el excedente de a ARCHIVE_BATCH.
+  const ARCHIVE_BATCH = 50;
   let archived = 0;
   if (dreams.length > maxActive) {
-    for (const d of dreams.slice(0, dreams.length - maxActive)) {
+    for (const d of dreams.slice(0, Math.min(dreams.length - maxActive, ARCHIVE_BATCH))) {
       try {
         const destino = d.path.replace(/^\/dreams\//, "/dreams-archive/");
         const cRes = await fetch(
