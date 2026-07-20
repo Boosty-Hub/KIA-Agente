@@ -1178,6 +1178,11 @@ function buildContext(opts: {
   knownData: string | null;
   recentHistory?: string | null;
   commentInstructions?: string | null;
+  // Digest de aprendizajes (dreams) consolidado por dreams-run en
+  // runtime_config.DREAMS_DIGEST. Reemplaza la lectura de /dreams/ por
+  // filesystem en cada sesión (231 archivos llegaron a costar listados +
+  // lecturas + turnos extra POR RESPUESTA).
+  dreamsDigest?: string | null;
 }) {
   const cls = opts.classification ?? {};
   const multi = opts.messages.length > 1;
@@ -1205,7 +1210,7 @@ function buildContext(opts: {
   return `[CONTEXTO]
 fecha_hora_actual: ${opts.now} (zona horaria ${opts.timezone})
 en_horario_laboral: ${opts.businessHours.active ? "sí" : "no"} (${opts.businessHours.label}). Si es "no" y el lead necesita un asesor humano, avisale que el equipo lo contacta apenas retome el horario de atención — no prometas transferencia inmediata.
-${opts.activeSituations ? `situaciones_vigentes (CRÍTICO — restricciones operativas reales de HOY; respetalas SIEMPRE, NO son ofertas):\n${opts.activeSituations}\nREGLA: nunca contradigas una situación vigente (p. ej. si dice "hoy cerrado", NO ofrezcas visita ni atención presencial hoy). Si la conversación lo amerita, avisá con naturalidad y empatía y ofrecé la alternativa (seguir por acá, coordinar para otro día).\n` : ""}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.vehicleCatalog ? `\ncatalogo_vehiculos (ÚNICOS modelos que comercializa el concesionario; precios "Desde" referenciales en USD):\n${opts.vehicleCatalog}\nREGLA: respondé SOLO sobre estos vehículos. Si el lead pregunta por un modelo/marca que no está en esta lista, aclará que no lo manejamos y ofrecé las alternativas del catálogo o derivá a un asesor — nunca inventes precios, modelos ni especificaciones fuera de esta lista.` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
+${opts.dreamsDigest ? `aprendizajes_del_operador (reglas del operador aprendidas de conversaciones reales — PRIORIDAD MÁXIMA sobre tu voz base; aplicalas SIEMPRE):\n${opts.dreamsDigest}\n` : ""}${opts.activeSituations ? `situaciones_vigentes (CRÍTICO — restricciones operativas reales de HOY; respetalas SIEMPRE, NO son ofertas):\n${opts.activeSituations}\nREGLA: nunca contradigas una situación vigente (p. ej. si dice "hoy cerrado", NO ofrezcas visita ni atención presencial hoy). Si la conversación lo amerita, avisá con naturalidad y empatía y ofrecé la alternativa (seguir por acá, coordinar para otro día).\n` : ""}${opts.activePromos ? `promociones_activas (mencionalas solo si vienen al caso de lo que pregunta el lead):\n${opts.activePromos}` : "promociones_activas: ninguna"}${opts.upcomingEvents ? `\neventos_proximos (podes anticiparlos si aportan a la conversacion):\n${opts.upcomingEvents}` : ""}${opts.vehicleCatalog ? `\ncatalogo_vehiculos (ÚNICOS modelos que comercializa el concesionario; precios "Desde" referenciales en USD):\n${opts.vehicleCatalog}\nREGLA: respondé SOLO sobre estos vehículos. Si el lead pregunta por un modelo/marca que no está en esta lista, aclará que no lo manejamos y ofrecé las alternativas del catálogo o derivá a un asesor — nunca inventes precios, modelos ni especificaciones fuera de esta lista.` : ""}${opts.commentInstructions != null ? `\norigen_comentario_instagram: sí — ${opts.commentInstructions}` : ""}
 lead_id: ${opts.lead.id}
 lead_name: ${opts.lead.display_name ?? "(desconocido)"}
 ${opts.knownData ? `datos_conocidos_del_lead (YA están en Kommo — NO los vuelvas a pedir. Pedí SOLO lo que figure como "(no registrado)" o lo que realmente falte; si necesitás verificar un dato, confirmá el valor que ya figura acá en vez de preguntarlo de cero):\n${opts.knownData}\n` : ""}genero_lead: ${opts.lead.gender ?? "desconocido"} (inferido del nombre). Tratá a la persona con la concordancia correcta (bienvenido/bienvenida, etc.); si es "desconocido", usá trato neutro SIN marcar género ni asumirlo.
@@ -1736,6 +1741,7 @@ Deno.serve(async (req: Request) => {
         knownData,
         recentHistory,
         commentInstructions,
+        dreamsDigest: (resolvedCfg.get("DREAMS_DIGEST") ?? "").trim() || null,
       });
 
       const outcome = await runAgent({
