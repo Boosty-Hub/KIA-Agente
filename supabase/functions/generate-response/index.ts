@@ -1234,7 +1234,7 @@ ${header} (esto es lo NUEVO que tenés que responder ahora)
 ${block}
 """
 
-Procede según tu system prompt: revisa ${opts.masterPath}/voice/ y ${opts.masterPath}/dreams/ para reglas, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
+Procede según tu system prompt: aplica los aprendizajes del bloque aprendizajes_del_operador si está presente, lee la memoria del lead si existe, usa search_kb si la pregunta es factual, redacta la respuesta con la voz definida en tu system prompt, actualiza ${opts.leadsPath}/${opts.lead.id}/. Usá fecha_hora_actual para cualquier cosa relativa al tiempo (hoy, mañana, vencimientos, horarios, días de demora).
 
 Tu MENSAJE FINAL debe ser SOLO el texto que se envía al lead, envuelto OBLIGATORIAMENTE en los tags <respuesta>…</respuesta> (sin nada antes ni después). Escribí el mensaje DIRIGIDO al cliente (tuteo, en segunda persona), NO un resumen de lo que hiciste. PROHIBIDO: narrar tus acciones o hablar del lead en tercera persona (ej: "¡Listo! He respondido a <nombre> con…", "He creado la memoria del lead…", "La respuesta va dentro del horario…"). Eso NO es la respuesta — la planificación va en mensajes ANTERIORES. Si no hay tags <respuesta> tu salida se descarta y va a revisión humana.`;
 }
