@@ -111,7 +111,7 @@ La sustitución y la lista de tools viven en `web/src/lib/agent-prompt.ts` (comp
 
 ### Tools del agente — acciones sobre Kommo (gated)
 
-Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en `agent_tools`) que **operan el CRM POR NOMBRE** (no por ID): resuelven etapa/campo en vivo contra la API de Kommo. Se despachan en `runCrmTool` dentro de `supabase/functions/generate-response/index.ts`; los helpers HTTP viven en `_shared/kommo.ts`. Cada capacidad tiene un **gate** en `kommo_publish_config` (default OFF), editable en `/agent → Acciones` (`agent/crm-actions-panel.tsx` → `/api/agent/crm-actions`). El gate es runtime (TTL 60s, sin re-sync); las tools siempre están declaradas en el agente, pero solo **ejecutan** si su gate está prendido y una instrucción del system prompt/vertical se los pide (modelo híbrido — ver descripciones en las migraciones).
+Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en `agent_tools`) que **operan el CRM POR NOMBRE** (no por ID): resuelven etapa/campo en vivo contra la API de Kommo. Se despachan en `runCrmTool` dentro de `supabase/functions/generate-response/index.ts`; los helpers HTTP viven en `_shared/kommo.ts`. Cada capacidad tiene un **gate** en `kommo_publish_config` (default OFF), editable en `/agent → Acciones` (`agent/crm-actions-panel.tsx` → `/api/agent/crm-actions`). **Declaración gate-aware**: una tool `system` con gate OFF **NO se declara** al Managed Agent (`filterToolRowsByGates` en `web/src/lib/agent-prompt.ts` — su schema cuesta input tokens en cada turno de cada sesión e invita llamadas alucinadas). Aplica a las 6 tools CRM, las 4 Shopify (`shopify_actions_enabled` + `shopify_can_*`) y `tasa_bcv` (`bcv_rate_enabled`); `search_kb` y el toolset nativo se declaran siempre. Cada toggle de gate re-sincroniza el agente (`syncAgentTools`, sube versión) agregando/quitando la tool y su mención en el scaffold (`buildCrmActionsBlock` — el bloque CRM del CORE_SCAFFOLD se genera solo con las tools declaradas, sin referencias colgantes). `runCrmTool` conserva el guard runtime como defensa en profundidad para la ventana entre el write del gate y el re-sync.
 
 | Tool | Qué hace | Gate | Migración |
 |---|---|---|---|
@@ -124,8 +124,8 @@ Además de `search_kb`, el agente tiene tools internas (`tool_type='system'` en 
 
 - **Master gate**: `crm_actions_enabled`. Apagarlo fuerza todas las capacidades hijas a `false` (cascada espejada en el route `/api/agent/crm-actions` y en el panel).
 - **Campos tipados** (0042): `actualizar_lead`/`actualizar_contacto` leen `field.type` vía `fetchEntityFields` (que ahora devuelve `code/type/enums`). `select`/`multiselect` → resuelve el valor textual a `enum_id` (`patchEntityFieldEnum`); contacto con `field.code` `PHONE`/`EMAIL` → shape `{field_code, values:[{value, enum_code:"WORK"}]}` (`patchContactCodeField`).
-- Las tools `system` se seedean `enabled=true` → `buildAgentTools()`/`syncAgentTools()` las registran en Anthropic en el próximo sync. **No** son editables desde `/tools` (ese editor gestiona solo tools `http`; PATCH/DELETE de una `system` devuelve 403).
-- El `/setup → agent` crea el Managed Agent con TODAS las tools `enabled` (system + http). Prender un gate por primera vez dispara un `syncAgentTools` idempotente para garantizar el registro.
+- Las tools `system` se seedean `enabled=true`, pero **solo se registran en Anthropic si su gate está ON** (filtro en `syncAgentTools` y en `/api/setup/agent`, mismo criterio en ambos). **No** son editables desde `/tools` (ese editor gestiona solo tools `http`; PATCH/DELETE de una `system` devuelve 403).
+- El `/setup → agent` crea el Managed Agent con las tools `enabled` **que pasan el filtro de gates** (system gateadas ON + http). Cada toggle de gate (en cualquier dirección) dispara un `syncAgentTools` idempotente que agrega o quita la tool del agente.
 
 ### Catálogo de vehículos y demografía del lead
 
