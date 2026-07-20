@@ -816,6 +816,21 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
       const baseContent =
         text || (media ? `[${media.label}${media.filename ? ` ${media.filename}` : ""}]` : "");
 
+      // Dedupe de webhooks re-entregados (0050): Kommo reintenta la entrega
+      // ante timeout/5xx — sin esta guarda, cada re-entrega creaba una fila
+      // nueva que se clasificaba de nuevo y podía disparar OTRA respuesta al
+      // mismo mensaje. El índice único parcial (mejor esfuerzo, 0050) cierra
+      // la ventana de carrera; esta guarda protege aunque el índice no exista.
+      if (m.id != null && String(m.id) !== "") {
+        const { data: dup } = await supabase
+          .from("messages")
+          .select("id")
+          .eq("kommo_message_id", String(m.id))
+          .limit(1)
+          .maybeSingle();
+        if (dup) continue;
+      }
+
       // Insert message (sin classification al principio)
       const { data: msg, error: msgErr } = await supabase
         .from("messages")
@@ -1043,7 +1058,12 @@ async function processPayload(payload: KommoPayload, anthropic: Anthropic, opera
 // classification.error y vertical NULL → invisibles para la cola PARA SIEMPRE.
 // El cron pasa cada minuto: reintentamos hasta 10 por ciclo. Adjuntos con URL
 // persistida (0035) se re-clasifican con imagen; sin URL → revisión humana.
+// CAP de reintentos: sin límite, un error persistente (no transitorio) se
+// reintentaba cada minuto PARA SIEMPRE — hasta 14.400 llamadas Haiku/día por
+// hasta 10 mensajes atascados. Tras RECOVER_MAX_ATTEMPTS el mensaje pasa a
+// revisión humana y el prefijo "recover:" lo saca de la cola de reintentos.
 const RECOVER_BATCH = 10;
+const RECOVER_MAX_ATTEMPTS = 5;
 
 async function recoverFailedClassifications(
   anthropic: Anthropic,
@@ -1170,8 +1190,25 @@ async function recoverFailedClassifications(
         });
         healed++;
       } catch (e) {
-        // Reintento en el próximo ciclo del cron (fallas transitorias).
-        console.warn("recover classify retry failed:", e instanceof Error ? e.message : String(e));
+        // Falla al reintentar: contar el intento. Transitoria → vuelve al
+        // próximo ciclo del cron; al llegar a RECOVER_MAX_ATTEMPTS se marca
+        // con prefijo "recover:" (sale del select) + revisión humana, para
+        // que un error persistente no queme Haiku cada minuto para siempre.
+        const prevCls = (msg.classification ?? {}) as Record<string, unknown>;
+        const attempts = (Number(prevCls.recover_attempts) || 0) + 1;
+        const update =
+          attempts >= RECOVER_MAX_ATTEMPTS
+            ? {
+                requires_human_review: true,
+                classification: {
+                  ...prevCls,
+                  recover_attempts: attempts,
+                  error: `recover: ${attempts} intentos agotados (${String(prevCls.error ?? "desconocido")})`,
+                },
+              }
+            : { classification: { ...prevCls, recover_attempts: attempts } };
+        await supabase.from("messages").update(update).eq("id", msg.id).is("vertical_id", null);
+        console.warn(`recover classify retry failed (intento ${attempts}/${RECOVER_MAX_ATTEMPTS}):`, e instanceof Error ? e.message : String(e));
       }
     }
     if (healed > 0) console.log(`recoverFailedClassifications: ${healed} mensaje(s) recuperados`);
